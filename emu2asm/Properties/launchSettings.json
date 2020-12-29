@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "emu2asm": {
+      "commandName": "Project",
+      "commandLineArgs": "C:\\Users\\Aldo\\source\\repos\\emu2asm\\config.xml D:\\Games\\VideoGames\\NES\\Roms\\ZELDA.nes D:\\Users\\10\\Aldo\\Documents\\Mesen.bak\\repo\\ZELDA.cdl D:\\Users\\10\\Aldo\\Documents\\Mesen.bak\\repo\\ZELDA.mlb"
+    }
+  }
+}
