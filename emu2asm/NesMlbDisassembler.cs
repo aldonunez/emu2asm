@@ -69,98 +69,102 @@ namespace emu2asm.NesMlb
         private void DisassembleBank( Bank bankInfo, string definitions )
         {
             var disasm = new Disasm6502.Disassembler();
-            uint dataOffset = 0;
-            uint dataRun = 0;
+            var dataBlock = new DataBlock();
 
             // TODO: delete all ASM files beforehand?
 
             string filename = string.Format( "Z_{0}.asm", bankInfo.Id );
 
-            using ( var writer = new StreamWriter( filename, false, System.Text.Encoding.ASCII ) )
+            using var writer = new StreamWriter( filename, false, System.Text.Encoding.ASCII );
+
+            writer.WriteLine();
+            writer.WriteLine( ".SEGMENT \"BANK_{0}\"", bankInfo.Id );
+            writer.WriteLine();
+            writer.WriteLine( definitions );
+
+            int endOffset = bankInfo.Offset + bankInfo.Size;
+
+            for ( int i = bankInfo.Offset; i < endOffset; i++ )
             {
-                writer.WriteLine();
-                writer.WriteLine( ".SEGMENT \"BANK_{0}\"", bankInfo.Id );
-                writer.WriteLine();
-                writer.WriteLine( definitions );
+                byte c = _coverage[i];
 
-                int endOffset = bankInfo.Offset + bankInfo.Size;
+                uint offset = (uint) i;
+                ushort pc = (ushort) (0x8000 + (offset % 0x4000));
 
-                for ( int i = bankInfo.Offset; i < endOffset; i++ )
+                if ( _labelDb.Program.ByAddress.TryGetValue( offset, out var record ) )
                 {
-                    byte c = _coverage[i];
-
-                    uint offset = (uint) i;
-                    ushort pc = (ushort) (0x8000 + (offset % 0x4000));
-
-                    if ( _labelDb.Program.ByAddress.TryGetValue( offset, out var record ) )
+                    if ( !string.IsNullOrEmpty( record.Name ) )
                     {
-                        if ( !string.IsNullOrEmpty( record.Name ) )
-                        {
-                            if ( dataRun > 0 )
-                            {
-                                WriteDataBlock( dataOffset, dataRun, writer );
-                                dataRun = 0;
-                            }
+                        FlushDataBlock( dataBlock, writer );
 
-                            writer.WriteLine( "{0}:", record.Name );
-                        }
-
-                        // TODO: comments
+                        writer.WriteLine( "{0}:", record.Name );
                     }
 
-                    if ( (c & 0x11) != 0 )
+                    // TODO: comments
+                }
+
+                if ( (c & 0x11) != 0 )
+                {
+                    disasm.PC = pc;
+                    InstDisasm inst = disasm.Disassemble( _rom.Image, i );
+                    string memoryName = null;
+
+                    int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
+                    i += instLen - 1;
+
+                    if ( IsAbsolute( inst.Mode ) || IsZeroPage( inst.Mode ) || inst.Mode == Mode.r )
                     {
-                        disasm.PC = pc;
-                        InstDisasm inst = disasm.Disassemble( _rom.Image, i );
-                        string memoryName = null;
+                        record = FindAbsoluteAddress( bankInfo, inst );
 
-                        int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
-                        i += instLen - 1;
+                        if ( record != null && !string.IsNullOrEmpty( record.Name ) )
+                            memoryName = record.Name;
+                    }
 
-                        if ( IsAbsolute( inst.Mode ) || IsZeroPage( inst.Mode ) )
-                        {
-                            record = FindAbsoluteAddress( bankInfo, inst );
+                    writer.Write( "    " );
+                    disasm.Format( inst, memoryName, writer );
+                    writer.WriteLine();
 
-                            if ( record != null && !string.IsNullOrEmpty( record.Name ) )
-                                memoryName = record.Name;
-                        }
-                        // TODO: roll this into above
-                        else if ( inst.Mode == Mode.r )
-                        {
-                            record = FindAbsoluteAddress( bankInfo, inst );
-
-                            if ( record != null && !string.IsNullOrEmpty( record.Name ) )
-                            {
-                                memoryName = record.Name;
-                            }
-                        }
-
-                        writer.Write( "    " );
-                        disasm.Format( inst, memoryName, writer );
+                    if ( inst.Class == Class.JMP
+                        || inst.Class == Class.RTS
+                        || inst.Class == Class.RTI )
                         writer.WriteLine();
-
-                        if ( inst.Class == Class.JMP
-                            || inst.Class == Class.RTS
-                            || inst.Class == Class.RTI )
-                            writer.WriteLine();
-                    }
-                    else
-                    {
-                        //if ( (c & 0x22) == 0 )
-                        //    writer.WriteLine( "; Unknown block" );
-
-                        if ( dataRun == 0 )
-                            dataOffset = offset;
-
-                        dataRun++;
-                    }
                 }
-
-                if ( dataRun > 0 )
+                else
                 {
-                    WriteDataBlock( dataOffset, dataRun, writer );
-                    dataRun = 0;
+                    if ( dataBlock.Known != ((c & 0x22) != 0) )
+                    {
+                        FlushDataBlock( dataBlock, writer );
+                    }
+
+                    if ( dataBlock.Size == 0 )
+                    {
+                        dataBlock.Offset = (int) offset;
+                        dataBlock.Known = (c & 0x22) != 0;
+                    }
+
+                    dataBlock.Size++;
                 }
+            }
+
+            FlushDataBlock( dataBlock, writer );
+        }
+
+        private record DataBlock
+        {
+            public int Offset;
+            public int Size;
+            public bool Known;
+        }
+
+        private void FlushDataBlock( DataBlock block, StreamWriter writer )
+        {
+            if ( block.Size > 0 )
+            {
+                if ( !block.Known )
+                    writer.WriteLine( "; Unknown block" );
+
+                WriteDataBlock( (uint) block.Offset, (uint) block.Size, writer );
+                block.Size = 0;
             }
         }
 
