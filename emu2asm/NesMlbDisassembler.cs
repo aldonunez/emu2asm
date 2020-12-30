@@ -30,7 +30,6 @@ namespace emu2asm.NesMlb
 
         public void Disassemble()
         {
-            MarkEvidentCode();
             TraceCode();
 
             // TODO: Only include definitions that are used in each bank.
@@ -39,14 +38,14 @@ namespace emu2asm.NesMlb
 
             foreach ( var pair in _labelDb.Ram.ByName )
             {
-                uint address = pair.Value.Address;
+                int address = pair.Value.Address;
 
                 builder.AppendFormat( "{0} := ${1:X2}\n", pair.Key, address );
             }
 
             foreach ( var pair in _labelDb.Registers.ByName )
             {
-                uint address = pair.Value.Address;
+                int address = pair.Value.Address;
 
                 builder.AppendFormat( "{0} := ${1:X2}\n", pair.Key, address );
             }
@@ -88,8 +87,8 @@ namespace emu2asm.NesMlb
             {
                 byte c = _coverage[i];
 
-                uint offset = (uint) i;
-                ushort pc = (ushort) (0x8000 + (offset % 0x4000));
+                int offset = i;
+                ushort pc = (ushort) (0x8000 + ((uint) offset % 0x4000));
 
                 if ( _labelDb.Program.ByAddress.TryGetValue( offset, out var record ) )
                 {
@@ -105,11 +104,20 @@ namespace emu2asm.NesMlb
 
                 if ( (c & 0x11) != 0 )
                 {
+                    FlushDataBlock( dataBlock, writer );
+
                     disasm.PC = pc;
                     InstDisasm inst = disasm.Disassemble( _rom.Image, i );
                     string memoryName = null;
 
                     int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
+
+                    if ( instLen < 1 )
+                    {
+                        string message = string.Format( "Found a bad instruction at program offset {0:X5}", offset );
+                        throw new ApplicationException( message );
+                    }
+
                     i += instLen - 1;
 
                     if ( IsAbsolute( inst.Mode ) || IsZeroPage( inst.Mode ) || inst.Mode == Mode.r )
@@ -138,7 +146,7 @@ namespace emu2asm.NesMlb
 
                     if ( dataBlock.Size == 0 )
                     {
-                        dataBlock.Offset = (int) offset;
+                        dataBlock.Offset = offset;
                         dataBlock.Known = (c & 0x22) != 0;
                     }
 
@@ -163,7 +171,7 @@ namespace emu2asm.NesMlb
                 if ( !block.Known )
                     writer.WriteLine( "; Unknown block" );
 
-                WriteDataBlock( (uint) block.Offset, (uint) block.Size, writer );
+                WriteDataBlock( block.Offset, block.Size, writer );
                 block.Size = 0;
             }
         }
@@ -200,19 +208,19 @@ namespace emu2asm.NesMlb
                 labelNamespace = _labelDb.Program;
             }
 
-            if ( labelNamespace.ByAddress.TryGetValue( (uint) absOffset, out record ) )
+            if ( labelNamespace.ByAddress.TryGetValue( absOffset, out record ) )
                 return record;
 
             return null;
         }
 
-        private void WriteDataBlock( uint start, uint length, StreamWriter writer )
+        private void WriteDataBlock( int start, int length, StreamWriter writer )
         {
             while ( length > 0 )
             {
                 writer.Write( "    .BYTE " );
 
-                uint lengthToWrite = (length > 8) ? 8 : length;
+                int lengthToWrite = (length > 8) ? 8 : length;
 
                 for ( int i = 0; i < lengthToWrite; i++ )
                 {
@@ -274,7 +282,7 @@ namespace emu2asm.NesMlb
 
         // Mark the code bytes that we were given.
 
-        private void MarkEvidentCode()
+        private void TraceCode()
         {
             for ( int i = 0; i < _coverage.Length; i++ )
             {
@@ -296,10 +304,33 @@ namespace emu2asm.NesMlb
                     _tracedCoverage[i] = (byte) t;
                 }
             }
-        }
 
-        private void TraceCode()
-        {
+            foreach ( var bankInfo in _config.Banks )
+            {
+                if ( bankInfo.RomToRam == null )
+                    continue;
+
+                var romToRam = bankInfo.RomToRam;
+                int startOffset = (bankInfo.RomToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
+                int endOffset = startOffset + bankInfo.RomToRam.Size;
+                int endRamAddr = romToRam.RamAddress + romToRam.Size;
+
+                Array.Fill<byte>( _coverage, 0x10, startOffset, bankInfo.RomToRam.Size );
+
+                foreach ( var record in _labelDb.SaveRam.ByName.Values )
+                {
+                    int address = record.Address + 0x6000;
+
+                    if ( address < romToRam.RamAddress
+                        || address >= endRamAddr
+                        || record.Length <= 1 )
+                        continue;
+
+                    int offset = (address - romToRam.RamAddress) + startOffset;
+
+                    Array.Fill<byte>( _coverage, 0x02, offset, record.Length );
+                }
+            }
         }
     }
 }

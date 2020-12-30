@@ -8,15 +8,15 @@ namespace emu2asm.NesMlb
     class LabelRecord
     {
         public string Name;
-        public uint Address;
-        public uint Length;
+        public int Address;
+        public int Length;
         public string Comment;
     }
 
     class LabelNamespace
     {
         public Dictionary<string, LabelRecord> ByName = new();
-        public Dictionary<uint, LabelRecord> ByAddress = new();
+        public Dictionary<int, LabelRecord> ByAddress = new();
     }
 
     class LabelDatabase
@@ -37,8 +37,8 @@ namespace emu2asm.NesMlb
             {
                 string[] fields = line.Split( ':', 4 );
                 char type;
-                uint memLength = 1;
-                uint memAddr;
+                int memLength = 1;
+                int memAddr;
                 string comment = null;
 
                 if ( fields.Length < 3 )
@@ -55,13 +55,13 @@ namespace emu2asm.NesMlb
                 {
                     string[] parts = fields[1].Split( '-', 2 );
 
-                    uint memAddrEnd = uint.Parse( parts[1], NumberStyles.HexNumber );
-                    memAddr = uint.Parse( parts[0], NumberStyles.HexNumber );
+                    int memAddrEnd = int.Parse( parts[1], NumberStyles.HexNumber );
+                    memAddr = int.Parse( parts[0], NumberStyles.HexNumber );
                     memLength = memAddrEnd - memAddr + 1;
                 }
                 else
                 {
-                    memAddr = uint.Parse( fields[1], NumberStyles.HexNumber );
+                    memAddr = int.Parse( fields[1], NumberStyles.HexNumber );
                 }
 
                 var record = new LabelRecord
