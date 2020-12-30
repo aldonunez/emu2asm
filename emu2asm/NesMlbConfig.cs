@@ -8,17 +8,12 @@ using NumberStyles = System.Globalization.NumberStyles;
 
 namespace emu2asm.NesMlb
 {
-    public struct BankInfo
+    public class BankInfo : IXmlSerializable
     {
-        public uint Count;
+        public uint Offset;
+        public uint Address;
         public uint Size;
-    }
-
-    public struct RamToRomMapping : IXmlSerializable
-    {
-        public uint RamAddress;
-        public uint RomAddress;
-        public uint Length;
+        public RomToRamMapping RomToRam;
 
         public XmlSchema GetSchema() => null;
 
@@ -32,13 +27,60 @@ namespace emu2asm.NesMlb
             while ( reader.NodeType != XmlNodeType.EndElement )
             {
                 string name = reader.Name;
-                bool isEmpty = reader.IsEmptyElement;
-                string content = "";
+                string content;
 
-                if ( isEmpty )
-                    reader.Read();
-                else
-                    content = reader.ReadElementContentAsString();
+                switch ( name )
+                {
+                    case "Offset":
+                        content = reader.ReadElementContentAsString();
+                        Offset = uint.Parse( content, NumberStyles.HexNumber );
+                        break;
+
+                    case "Address":
+                        content = reader.ReadElementContentAsString();
+                        Address = uint.Parse( content, NumberStyles.HexNumber );
+                        break;
+
+                    case "Size":
+                        content = reader.ReadElementContentAsString();
+                        Size = uint.Parse( content, NumberStyles.HexNumber );
+                        break;
+
+                    case "RomToRam":
+                    {
+                        var romToRam = new RomToRamMapping();
+                        romToRam.ReadXml( reader );
+                        RomToRam = romToRam;
+                        break;
+                    }
+                }
+            }
+
+            reader.ReadEndElement();
+        }
+
+        public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
+    }
+
+    public class RomToRamMapping : IXmlSerializable
+    {
+        public uint RomAddress;
+        public uint RamAddress;
+        public uint Size;
+
+        public XmlSchema GetSchema() => null;
+
+        public void ReadXml( XmlReader reader )
+        {
+            if ( reader.IsEmptyElement )
+                return;
+
+            reader.Read();
+
+            while ( reader.NodeType != XmlNodeType.EndElement )
+            {
+                string name = reader.Name;
+                string content = reader.ReadElementContentAsString();
 
                 switch ( name )
                 {
@@ -50,8 +92,8 @@ namespace emu2asm.NesMlb
                         RomAddress = uint.Parse( content, NumberStyles.HexNumber );
                         break;
 
-                    case "Length":
-                        Length = uint.Parse( content, NumberStyles.HexNumber );
+                    case "Size":
+                        Size = uint.Parse( content, NumberStyles.HexNumber );
                         break;
                 }
             }
@@ -96,10 +138,7 @@ namespace emu2asm.NesMlb
     [XmlRoot( ElementName = "Emu2asm-nesmlb-config" )]
     public class Config
     {
-        public BankInfo BankInfo;
-
-        public RamToRomMapping? RamToRom;
-
+        public List<BankInfo> Banks;
         public LabelMap Labels;
 
         public static Config Make( TextReader textReader )
