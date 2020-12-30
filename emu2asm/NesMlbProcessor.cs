@@ -17,10 +17,12 @@ namespace emu2asm.NesMlb
             var labelDb = ReadLabelDb( labelPath );
 
             var disassembler = new Disassembler(
-                configPath,
-                romPath,
-                coveragePath,
-                labelPath );
+                config,
+                romImage,
+                coverage,
+                labelDb );
+
+            disassembler.Disassemble();
         }
 
         private static Config ReadConfig( string path )
@@ -36,7 +38,7 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private static object ReadLabelDb( string path )
+        private static LabelDatabase ReadLabelDb( string path )
         {
             using ( StreamReader streamReader = new StreamReader( path ) )
             {

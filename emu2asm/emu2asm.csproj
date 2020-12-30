@@ -5,4 +5,8 @@
     <TargetFramework>net5.0</TargetFramework>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Disasm6502\Disasm6502.csproj" />
+  </ItemGroup>
+
 </Project>
