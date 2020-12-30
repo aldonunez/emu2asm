@@ -8,17 +8,20 @@ using NumberStyles = System.Globalization.NumberStyles;
 
 namespace emu2asm.NesMlb
 {
-    public class BankInfo : IXmlSerializable
+    public class Bank : IXmlSerializable
     {
-        public uint Offset;
-        public uint Address;
-        public uint Size;
+        public string Id;
+        public int Offset;
+        public int Address;
+        public int Size;
         public RomToRamMapping RomToRam;
 
         public XmlSchema GetSchema() => null;
 
         public void ReadXml( XmlReader reader )
         {
+            Id = reader.GetAttribute( "Id" );
+
             if ( reader.IsEmptyElement )
                 return;
 
@@ -33,17 +36,17 @@ namespace emu2asm.NesMlb
                 {
                     case "Offset":
                         content = reader.ReadElementContentAsString();
-                        Offset = uint.Parse( content, NumberStyles.HexNumber );
+                        Offset = int.Parse( content, NumberStyles.HexNumber );
                         break;
 
                     case "Address":
                         content = reader.ReadElementContentAsString();
-                        Address = uint.Parse( content, NumberStyles.HexNumber );
+                        Address = int.Parse( content, NumberStyles.HexNumber );
                         break;
 
                     case "Size":
                         content = reader.ReadElementContentAsString();
-                        Size = uint.Parse( content, NumberStyles.HexNumber );
+                        Size = int.Parse( content, NumberStyles.HexNumber );
                         break;
 
                     case "RomToRam":
@@ -64,9 +67,9 @@ namespace emu2asm.NesMlb
 
     public class RomToRamMapping : IXmlSerializable
     {
-        public uint RomAddress;
-        public uint RamAddress;
-        public uint Size;
+        public int RomAddress;
+        public int RamAddress;
+        public int Size;
 
         public XmlSchema GetSchema() => null;
 
@@ -85,15 +88,15 @@ namespace emu2asm.NesMlb
                 switch ( name )
                 {
                     case "RamAddress":
-                        RamAddress = uint.Parse( content, NumberStyles.HexNumber );
+                        RamAddress = int.Parse( content, NumberStyles.HexNumber );
                         break;
 
                     case "RomAddress":
-                        RomAddress = uint.Parse( content, NumberStyles.HexNumber );
+                        RomAddress = int.Parse( content, NumberStyles.HexNumber );
                         break;
 
                     case "Size":
-                        Size = uint.Parse( content, NumberStyles.HexNumber );
+                        Size = int.Parse( content, NumberStyles.HexNumber );
                         break;
                 }
             }
@@ -138,7 +141,7 @@ namespace emu2asm.NesMlb
     [XmlRoot( ElementName = "Emu2asm-nesmlb-config" )]
     public class Config
     {
-        public List<BankInfo> Banks;
+        public List<Bank> Banks;
         public LabelMap Labels;
 
         public static Config Make( TextReader textReader )

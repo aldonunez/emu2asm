@@ -33,15 +33,6 @@ namespace emu2asm.NesMlb
             MarkEvidentCode();
             TraceCode();
 
-            var disasm = new Disasm6502.Disassembler();
-            uint prevBank = uint.MaxValue;
-            uint dataOffset = 0;
-            uint dataRun = 0;
-
-            // TODO: delete all ASM files beforehand?
-
-            StreamWriter writer = null;
-
             // TODO: Only include definitions that are used in each bank.
 
             StringBuilder builder = new StringBuilder();
@@ -69,43 +60,37 @@ namespace emu2asm.NesMlb
 
             string definitions = builder.ToString();
 
-            try
+            foreach ( var bank in _config.Banks )
             {
-                for ( int i = 0; i < _coverage.Length; i++ )
+                DisassembleBank( bank, definitions );
+            }
+        }
+
+        private void DisassembleBank( Bank bankInfo, string definitions )
+        {
+            var disasm = new Disasm6502.Disassembler();
+            uint dataOffset = 0;
+            uint dataRun = 0;
+
+            // TODO: delete all ASM files beforehand?
+
+            string filename = string.Format( "Z_{0}.asm", bankInfo.Id );
+
+            using ( var writer = new StreamWriter( filename, false, System.Text.Encoding.ASCII ) )
+            {
+                writer.WriteLine();
+                writer.WriteLine( ".SEGMENT \"BANK_{0}\"", bankInfo.Id );
+                writer.WriteLine();
+                writer.WriteLine( definitions );
+
+                int endOffset = bankInfo.Offset + bankInfo.Size;
+
+                for ( int i = bankInfo.Offset; i < endOffset; i++ )
                 {
                     byte c = _coverage[i];
 
                     uint offset = (uint) i;
-                    uint bank = offset >> 14;
                     ushort pc = (ushort) (0x8000 + (offset % 0x4000));
-
-                    if ( bank == 7 )
-                        break;
-
-                    if ( bank == 4 && pc == 0x801E)
-                        Debugger.Break();
-
-                    if ( bank != prevBank )
-                    {
-                        if ( dataRun > 0 )
-                        {
-                            WriteDataBlock( dataOffset, dataRun, writer );
-                            dataRun = 0;
-                        }
-
-                        if ( writer != null )
-                            writer.Close();
-
-                        string filename = string.Format( "Z_{0:D2}.asm", bank );
-                        writer = new StreamWriter( filename, false, System.Text.Encoding.ASCII );
-
-                        writer.WriteLine();
-                        writer.WriteLine( ".SEGMENT \"BANK_{0:X2}\"\n", bank );
-
-                        writer.WriteLine( definitions );
-
-                        prevBank = bank;
-                    }
 
                     if ( _labelDb.Program.ByAddress.TryGetValue( offset, out var record ) )
                     {
@@ -134,7 +119,7 @@ namespace emu2asm.NesMlb
 
                         if ( IsAbsolute( inst.Mode ) || IsZeroPage( inst.Mode ) )
                         {
-                            record = FindAbsoluteAddress( bank, inst );
+                            record = FindAbsoluteAddress( bankInfo, inst );
 
                             if ( record != null && !string.IsNullOrEmpty( record.Name ) )
                                 memoryName = record.Name;
@@ -142,7 +127,7 @@ namespace emu2asm.NesMlb
                         // TODO: roll this into above
                         else if ( inst.Mode == Mode.r )
                         {
-                            record = FindAbsoluteAddress( bank, inst );
+                            record = FindAbsoluteAddress( bankInfo, inst );
 
                             if ( record != null && !string.IsNullOrEmpty( record.Name ) )
                             {
@@ -170,19 +155,20 @@ namespace emu2asm.NesMlb
                         dataRun++;
                     }
                 }
-            }
-            finally
-            {
-                if ( writer != null )
-                    writer.Close();
+
+                if ( dataRun > 0 )
+                {
+                    WriteDataBlock( dataOffset, dataRun, writer );
+                    dataRun = 0;
+                }
             }
         }
 
-        private LabelRecord FindAbsoluteAddress( uint bank, InstDisasm inst )
+        private LabelRecord FindAbsoluteAddress( Bank bankInfo, InstDisasm inst )
         {
             LabelRecord record;
             LabelNamespace labelNamespace;
-            uint absOffset;
+            int absOffset;
 
             if ( inst.Value < 0x2000 )
             {
@@ -196,21 +182,21 @@ namespace emu2asm.NesMlb
             }
             else if ( inst.Value < 0x8000 )
             {
-                absOffset = (inst.Value - 0x6000u);
+                absOffset = (inst.Value - 0x6000);
                 labelNamespace = _labelDb.SaveRam;
             }
             else if ( inst.Value < 0xC000 )
             {
-                absOffset = (inst.Value - 0x8000u) + bank * 0x4000;
+                absOffset = (inst.Value - 0x8000) + bankInfo.Offset;
                 labelNamespace = _labelDb.Program;
             }
             else
             {
-                absOffset = (inst.Value - 0xC000u) + 0x1C000;
+                absOffset = (inst.Value - 0xC000) + 0x1C000;
                 labelNamespace = _labelDb.Program;
             }
 
-            if ( labelNamespace.ByAddress.TryGetValue( absOffset, out record ) )
+            if ( labelNamespace.ByAddress.TryGetValue( (uint) absOffset, out record ) )
                 return record;
 
             return null;
