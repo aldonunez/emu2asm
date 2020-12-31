@@ -69,6 +69,7 @@ namespace emu2asm.NesMlb
         {
             var disasm = new Disasm6502.Disassembler();
             var dataBlock = new DataBlock();
+            var segment = FindSegment( bankInfo.Offset, bankInfo );
 
             // TODO: delete all ASM files beforehand?
 
@@ -77,20 +78,28 @@ namespace emu2asm.NesMlb
             using var writer = new StreamWriter( filename, false, System.Text.Encoding.ASCII );
 
             writer.WriteLine();
-            writer.WriteLine( ".SEGMENT \"BANK_{0}\"", bankInfo.Id );
+            writer.WriteLine( ".SEGMENT \"{0}\"", segment.Name );
             writer.WriteLine();
             writer.WriteLine( definitions );
 
             int endOffset = bankInfo.Offset + bankInfo.Size;
 
-            for ( int i = bankInfo.Offset; i < endOffset; i++ )
+            for ( int romOffset = bankInfo.Offset; romOffset < endOffset; romOffset++ )
             {
-                byte c = _coverage[i];
+                if ( !segment.IsOffsetInside( romOffset ) )
+                {
+                    FlushDataBlock( dataBlock, writer );
 
-                int offset = i;
-                ushort pc = (ushort) (0x8000 + ((uint) offset % 0x4000));
+                    segment = FindSegment( romOffset, bankInfo );
 
-                if ( _labelDb.Program.ByAddress.TryGetValue( offset, out var record ) )
+                    writer.WriteLine( "\n.SEGMENT \"{0}\"\n", segment.Name );
+                }
+
+                ushort pc = (ushort) segment.GetAddress( romOffset );
+
+                int nsOffset = segment.GetNamespaceOffset( romOffset );
+
+                if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out var record ) )
                 {
                     if ( !string.IsNullOrEmpty( record.Name ) )
                     {
@@ -102,23 +111,25 @@ namespace emu2asm.NesMlb
                     // TODO: comments
                 }
 
+                byte c = _coverage[romOffset];
+
                 if ( (c & 0x11) != 0 )
                 {
                     FlushDataBlock( dataBlock, writer );
 
                     disasm.PC = pc;
-                    InstDisasm inst = disasm.Disassemble( _rom.Image, i );
+                    InstDisasm inst = disasm.Disassemble( _rom.Image, romOffset );
                     string memoryName = null;
 
                     int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
 
                     if ( instLen < 1 )
                     {
-                        string message = string.Format( "Found a bad instruction at program offset {0:X5}", offset );
+                        string message = string.Format( "Found a bad instruction at program offset {0:X5}", romOffset );
                         throw new ApplicationException( message );
                     }
 
-                    i += instLen - 1;
+                    romOffset += instLen - 1;
 
                     if ( IsAbsolute( inst.Mode ) || IsZeroPage( inst.Mode ) || inst.Mode == Mode.r )
                     {
@@ -146,7 +157,7 @@ namespace emu2asm.NesMlb
 
                     if ( dataBlock.Size == 0 )
                     {
-                        dataBlock.Offset = offset;
+                        dataBlock.Offset = romOffset;
                         dataBlock.Known = (c & 0x22) != 0;
                     }
 
@@ -155,6 +166,80 @@ namespace emu2asm.NesMlb
             }
 
             FlushDataBlock( dataBlock, writer );
+        }
+
+        private Segment FindSegment( int offset, Bank bankInfo )
+        {
+            string name = "BANK_" + bankInfo.Id;
+
+            if ( bankInfo.RomToRam != null )
+            {
+                var romToRam = bankInfo.RomToRam;
+                int segmentOffset = (romToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
+                int endOffset = segmentOffset + romToRam.Size;
+
+                if ( offset >= segmentOffset && offset < endOffset )
+                    return new Segment(
+                        segmentOffset,
+                        romToRam.RamAddress,
+                        romToRam.Size,
+                        _labelDb.SaveRam,
+                        segmentOffset + 0x6000 - romToRam.RamAddress,
+                        name + "_RAM" );
+
+                if ( offset < endOffset )
+                    return new Segment(
+                        bankInfo.Offset,
+                        bankInfo.Address,
+                        segmentOffset - bankInfo.Offset,
+                        _labelDb.Program, 0, name );
+
+                name += "_CONT";
+            }
+
+            return new Segment(
+                bankInfo.Offset,
+                bankInfo.Address,
+                bankInfo.Size,
+                _labelDb.Program, 0, name );
+        }
+
+        private record Segment
+        {
+            public int Offset;
+            public int Address;
+            public int Size;
+            public LabelNamespace Namespace;
+            public int NamespaceBase;
+            public string Name;
+
+            public Segment(
+                int offset, int address, int size,
+                LabelNamespace labelNamespace, int nsBase, string name )
+            {
+                Offset = offset;
+                Address = address;
+                Size = size;
+                Namespace = labelNamespace;
+                NamespaceBase = nsBase;
+                Name = name;
+            }
+
+            public bool IsOffsetInside( int offset )
+            {
+                int endOffset = Offset + Size;
+                return offset >= Offset && offset < endOffset;
+            }
+
+            public int GetAddress( int offset )
+            {
+                return (offset - Offset) + Address;
+            }
+
+            public int GetNamespaceOffset( int offset )
+            {
+                return offset - NamespaceBase;
+            }
         }
 
         private record DataBlock
@@ -280,10 +365,10 @@ namespace emu2asm.NesMlb
         private const byte TracedBankMask = 0x38;
         private const byte TracedBankShift = 3;
 
-        // Mark the code bytes that we were given.
-
         private void TraceCode()
         {
+            // Mark the code bytes that we were given.
+
             for ( int i = 0; i < _coverage.Length; i++ )
             {
                 byte c = _coverage[i];
@@ -304,6 +389,8 @@ namespace emu2asm.NesMlb
                     _tracedCoverage[i] = (byte) t;
                 }
             }
+
+            // Mark the code bytes that are copied to Save RAM.
 
             foreach ( var bankInfo in _config.Banks )
             {
@@ -329,6 +416,78 @@ namespace emu2asm.NesMlb
                     int offset = (address - romToRam.RamAddress) + startOffset;
 
                     Array.Fill<byte>( _coverage, 0x02, offset, record.Length );
+                }
+            }
+
+            // Generate labels for jumps in code copied to Save RAM.
+
+            var disasm = new Disasm6502.Disassembler();
+
+            foreach ( var bankInfo in _config.Banks )
+            {
+                if ( bankInfo.RomToRam == null )
+                    continue;
+
+                var romToRam = bankInfo.RomToRam;
+                int startOffset = (bankInfo.RomToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
+                int endOffset = startOffset + bankInfo.RomToRam.Size;
+                int endRamAddr = romToRam.RamAddress + romToRam.Size;
+
+                int addr = romToRam.RamAddress;
+
+                for ( int offset = startOffset; offset < endOffset; offset++ )
+                {
+                    byte c = _coverage[offset];
+
+                    if ( (c & 0x11) != 0 )
+                    {
+                        disasm.PC = (ushort) addr;
+                        InstDisasm inst = disasm.Disassemble( _rom.Image, offset );
+
+                        int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
+
+                        if ( instLen < 1 )
+                        {
+                            string message = string.Format( "Found a bad instruction at program offset {0:X5}", offset );
+                            throw new ApplicationException( message );
+                        }
+
+                        offset += instLen - 1;
+                        addr += instLen;
+
+                        if ( inst.Mode == Mode.r )
+                        {
+                            int relAddr = inst.Value - 0x6000;
+                            string labelName = string.Format( "L{0:X4}", inst.Value );
+
+                            // If found, then it has a comment but no name.
+
+                            if ( !_labelDb.SaveRam.ByName.TryGetValue( labelName, out LabelRecord record ) )
+                            {
+                                if ( !_labelDb.SaveRam.ByAddress.TryGetValue( relAddr, out record ) )
+                                {
+                                    record = new LabelRecord
+                                    {
+                                        Address = relAddr,
+                                        Name = labelName,
+                                        Length = 1
+                                    };
+
+                                    _labelDb.SaveRam.ByAddress.Add( relAddr, record );
+                                }
+                                else
+                                {
+                                    record.Name = labelName;
+                                }
+
+                                _labelDb.SaveRam.ByName.Add( record.Name, record );
+                            }
+                        }
+                    }
+                    else
+                    {
+                        addr++;
+                    }
                 }
             }
         }
