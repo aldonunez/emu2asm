@@ -63,6 +63,8 @@ namespace emu2asm.NesMlb
             {
                 DisassembleBank( bank, definitions );
             }
+
+            WriteLinkerScript();
         }
 
         private void DisassembleBank( Bank bankInfo, string definitions )
@@ -490,6 +492,51 @@ namespace emu2asm.NesMlb
                     }
                 }
             }
+        }
+
+        private void WriteLinkerScript()
+        {
+            using var writer = new StreamWriter( "nes.cfg", false, System.Text.Encoding.ASCII );
+
+            writer.WriteLine( "MEMORY\n{\n" );
+            foreach ( var bankInfo in _config.Banks )
+            {
+                writer.WriteLine(
+                    "    MEM_{0}: start = ${1:X4}, size = ${2:X4}, file = \"bank_{0}.bin\", fill = yes, fillval = $00 ;",
+                    bankInfo.Id,
+                    bankInfo.Address,
+                    bankInfo.Size );
+
+                if ( bankInfo.RomToRam != null )
+                {
+                    writer.WriteLine(
+                        "    MEM_{0}_RAM: start = ${1:X4}, size = ${2:X4}, fill = yes, fillval = $00 ;",
+                        bankInfo.Id,
+                        bankInfo.RomToRam.RamAddress,
+                        bankInfo.RomToRam.Size );
+                }
+            }
+            writer.WriteLine( "}\n" );
+
+            writer.WriteLine( "SEGMENTS\n{\n" );
+            foreach ( var bankInfo in _config.Banks )
+            {
+                writer.WriteLine(
+                    "    BANK_{0}: load = MEM_{0}, type = ro, align = $4000 ;",
+                    bankInfo.Id );
+
+                if ( bankInfo.RomToRam != null )
+                {
+                    writer.WriteLine(
+                        "    BANK_{0}_RAM: load = MEM_{0}, type = ro, run = MEM_{0}_RAM, define = yes ;",
+                        bankInfo.Id );
+
+                    writer.WriteLine(
+                        "    BANK_{0}_CONT: load = MEM_{0}, type = ro ;",
+                        bankInfo.Id );
+                }
+            }
+            writer.WriteLine( "}" );
         }
     }
 }
