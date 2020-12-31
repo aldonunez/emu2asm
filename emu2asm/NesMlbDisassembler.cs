@@ -126,9 +126,6 @@ namespace emu2asm.NesMlb
                     writer.WriteLine( "\n.SEGMENT \"{0}\"\n", segment.Name );
                 }
 
-                if ( romOffset == 0xABB5 )
-                    Debugger.Break();
-
                 ushort pc = (ushort) segment.GetAddress( romOffset );
 
                 int nsOffset = segment.GetNamespaceOffset( romOffset );
@@ -548,7 +545,7 @@ namespace emu2asm.NesMlb
                 if ( bankInfo.RomToRam != null )
                 {
                     writer.WriteLine(
-                        "    MEM_{0}_RAM: start = ${1:X4}, size = ${2:X4}, fill = yes, fillval = $00 ;",
+                        "    MEM_{0}_RAM: start = ${1:X4}, size = ${2:X4}, file = \"\", fill = yes, fillval = $00 ;",
                         bankInfo.Id,
                         bankInfo.RomToRam.RamAddress,
                         bankInfo.RomToRam.Size );

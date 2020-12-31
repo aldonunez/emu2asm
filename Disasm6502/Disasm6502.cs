@@ -242,29 +242,37 @@ namespace Disasm6502
                 case Mode.a:
                     if ( memoryName == null )
                         writer.Write( " ${0:X4}", inst.Value );
-                    else
+                    else if ( inst.Value >= 0x100 )
                         writer.Write( " {0}", memoryName );
+                    else
+                        writer.Write( " a:{0}", memoryName );
                     break;
 
                 case Mode.aN:
                     if ( memoryName == null )
                         writer.Write( " (${0:X4})", inst.Value );
-                    else
+                    else if ( inst.Value >= 0x100 )
                         writer.Write( " ({0})", memoryName );
+                    else
+                        writer.Write( " (a:{0})", memoryName );
                     break;
 
                 case Mode.ax:
                     if ( memoryName == null )
                         writer.Write( " ${0:X4}, X", inst.Value );
-                    else
+                    else if ( inst.Value >= 0x100 )
                         writer.Write( " {0}, X", memoryName );
+                    else
+                        writer.Write( " a:{0}, X", memoryName );
                     break;
 
                 case Mode.ay:
                     if ( memoryName == null )
                         writer.Write( " ${0:X4}, Y", inst.Value );
-                    else
+                    else if ( inst.Value >= 0x100 )
                         writer.Write( " {0}, Y", memoryName );
+                    else
+                        writer.Write( " a:{0}, Y", memoryName );
                     break;
             }
         }
