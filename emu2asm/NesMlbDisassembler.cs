@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -13,6 +14,12 @@ namespace emu2asm.NesMlb
         private LabelDatabase _labelDb;
         private byte[] _coverage;
         private byte[] _tracedCoverage;
+        private int[] _originCoverage;
+
+        private List<LabelRecord> _importsForFixedBank = new();
+        private List<string>[] _exportsByBank;
+
+        private readonly LabelNamespace _nullNamepsace = new();
 
         public Disassembler(
             Config config,
@@ -26,6 +33,7 @@ namespace emu2asm.NesMlb
             _labelDb = labelDatabase;
 
             _tracedCoverage = new byte[coverageImage.Length];
+            _originCoverage = new int[coverageImage.Length];
         }
 
         public void Disassemble()
@@ -63,9 +71,10 @@ namespace emu2asm.NesMlb
 
                 // TODO: hardcoded addresses
 
-                if ( address < 0x67F0 || address >= 0x7F00 )
+                if ( address < 0x67F0 || address >= 0x7F00
+                    || (address >= 0x687E && address < 0x6C90) )
                 {
-                    builder.AppendFormat( "{0} := {1}\n", pair.Key, address );
+                    builder.AppendFormat( "{0} := ${1:X4}\n", pair.Key, address );
                 }
                 else
                 {
@@ -88,6 +97,8 @@ namespace emu2asm.NesMlb
 
                 builder.AppendFormat( ".GLOBAL {0}\n", pair.Key );
             }
+
+            builder.AppendLine();
 
             string definitions = builder.ToString();
 
@@ -115,6 +126,23 @@ namespace emu2asm.NesMlb
             writer.WriteLine( ".SEGMENT \"{0}\"", segment.Name );
             writer.WriteLine();
             writer.WriteLine( definitions );
+
+            if ( bankInfo.Address == 0xC000 )
+            {
+                foreach ( var record in _importsForFixedBank )
+                {
+                    writer.WriteLine( ".IMPORT {0}", record.Name );
+                }
+            }
+            else
+            {
+                int bankNumber = int.Parse( bankInfo.Id );
+
+                foreach ( var name in _exportsByBank[bankNumber] )
+                {
+                    writer.WriteLine( ".EXPORT {0}", name );
+                }
+            }
 
             int endOffset = bankInfo.Offset + bankInfo.Size;
 
@@ -155,19 +183,14 @@ namespace emu2asm.NesMlb
                     InstDisasm inst = disasm.Disassemble( _rom.Image, romOffset );
                     string memoryName = null;
 
-                    int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
-
+                    int  instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
                     if ( instLen < 1 )
-                    {
-                        string message = string.Format( "Found a bad instruction at program offset {0:X5}", romOffset );
-                        throw new ApplicationException( message );
-                    }
+                        ThrowBadInstructionError( romOffset );
 
-                    romOffset += instLen - 1;
-
-                    if ( IsAbsolute( inst.Mode ) || IsZeroPage( inst.Mode ) || inst.Mode == Mode.r )
+                    if ( IsZeroPage( inst.Mode ) || inst.Mode == Mode.r
+                        || (IsAbsolute( inst.Mode ) && !WritesToRom( inst )) )
                     {
-                        record = FindAbsoluteAddress( bankInfo, inst );
+                        record = FindAbsoluteAddress( bankInfo, inst, romOffset );
 
                         if ( record != null && !string.IsNullOrEmpty( record.Name ) )
                             memoryName = record.Name;
@@ -181,6 +204,8 @@ namespace emu2asm.NesMlb
                         || inst.Class == Class.RTS
                         || inst.Class == Class.RTI )
                         writer.WriteLine();
+
+                    romOffset += instLen - 1;
                 }
                 else
                 {
@@ -295,7 +320,7 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private LabelRecord FindAbsoluteAddress( Bank bankInfo, InstDisasm inst )
+        private LabelRecord FindAbsoluteAddress( Bank bankInfo, InstDisasm inst, int instOffset )
         {
             LabelRecord record;
             LabelNamespace labelNamespace;
@@ -318,8 +343,26 @@ namespace emu2asm.NesMlb
             }
             else if ( inst.Value < 0xC000 )
             {
-                absOffset = (inst.Value - 0x8000) + bankInfo.Offset;
-                labelNamespace = _labelDb.Program;
+                if ( bankInfo.Address == 0x8000 )
+                {
+                    absOffset = (inst.Value - 0x8000) + bankInfo.Offset;
+                    labelNamespace = _labelDb.Program;
+                }
+                else
+                {
+                    if ( (_tracedCoverage[instOffset] & TracedBankKnownFlag) != 0 )
+                    {
+                        int bank = _tracedCoverage[instOffset] & 0x0F;
+
+                        absOffset = (inst.Value - 0x8000) + _config.Banks[bank].Offset;
+                        labelNamespace = _labelDb.Program;
+                    }
+                    else
+                    {
+                        absOffset = 0;
+                        labelNamespace = _nullNamepsace;
+                    }
+                }
             }
             else
             {
@@ -387,7 +430,17 @@ namespace emu2asm.NesMlb
             return false;
         }
 
-        private const byte TracedBankKnownFlag = 4;
+        private static bool WritesToRom( InstDisasm inst )
+        {
+            if ( inst.Class != Class.STA
+                && inst.Class != Class.STX
+                && inst.Class != Class.STY )
+                return false;
+
+            return inst.Value >= 0x8000;
+        }
+
+        private const byte TracedBankKnownFlag = 0x80;
 
         private void ClearUnusedCoverageBit()
         {
@@ -399,8 +452,319 @@ namespace emu2asm.NesMlb
             }
         }
 
+        private struct BranchInfo
+        {
+            public int Offset;
+            public int MappedBank;
+            public int OriginOffset;
+
+            public BranchInfo( int offset, int mappedBank, int originOffset )
+            {
+                Offset = offset;
+                MappedBank = mappedBank;
+                OriginOffset = originOffset;
+            }
+        }
+
         private void TraceCode()
         {
+            TraceCallsToFixedBank();
+            TraceCallsInFixedBank();
+            ReportTracedCalls();
+            CollateNonFixedExports();
+        }
+
+        private void TraceCallsInFixedBank()
+        {
+            var disasm = new Disasm6502.Disassembler();
+
+            foreach ( var bankInfo in _config.Banks )
+            {
+                if ( bankInfo.Address != 0xC000 )
+                    continue;
+
+                int  endOffset = bankInfo.Offset + bankInfo.Size;
+
+                int  a = -1;
+                int  mappedBank = -1;
+                int  originOffset = -1;
+                bool firstIter = true;
+                var  branches = new Queue<BranchInfo>();
+
+                branches.Enqueue( new BranchInfo( bankInfo.Offset, -1, -1 ) );
+
+                while ( branches.Count > 0 )
+                {
+                    BranchInfo branchInfo = branches.Dequeue();
+                    mappedBank = branchInfo.MappedBank;
+                    originOffset = branchInfo.OriginOffset;
+
+                    if ( mappedBank == 4 )
+                        Console.WriteLine( "Processing branch" );
+
+                    int offset = branchInfo.Offset;
+                    int addr = bankInfo.Address + (offset - bankInfo.Offset);
+
+                    while ( offset < endOffset )
+                    {
+                        byte c = _coverage[offset];
+
+                        if ( (c & 0x11) != 0 )
+                        {
+                            if ( (_tracedCoverage[offset] & TracedBankKnownFlag) != 0 )
+                                break;
+
+                            if ( (_tracedCoverage[offset] & 0x20) != 0 )
+                            {
+                                mappedBank = _tracedCoverage[offset] & 0x0F;
+                                originOffset = _originCoverage[offset];
+                                _tracedCoverage[offset] = (byte) (_tracedCoverage[offset] & ~0x20);
+
+                                if ( mappedBank == 4 )
+                                    Console.WriteLine( "Traced from bank 5" );
+                            }
+
+                            if ( !firstIter )
+                                _tracedCoverage[offset] |= 0x40;
+
+                            disasm.PC = (ushort) addr;
+                            InstDisasm inst = disasm.Disassemble( _rom.Image, offset );
+
+                            int  instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
+                            bool branch = false;
+                            bool breakAfterBranch = false;
+                            bool invalidateBankAfterBranch = false;
+
+                            if ( instLen < 1 )
+                                ThrowBadInstructionError( offset );
+
+                            if ( mappedBank >= 0 )
+                            {
+                                _tracedCoverage[offset] = (byte) (mappedBank | TracedBankKnownFlag);
+                                _originCoverage[offset] = originOffset;
+
+                                if ( mappedBank == 4 )
+                                    Console.WriteLine( "{0:X5}", offset );
+                            }
+
+                            if ( inst.Class == Class.LDA )
+                            {
+                                if ( inst.Mode == Mode.I )
+                                    a = inst.Value;
+                                else
+                                    a = -1;
+                            }
+                            else if ( inst.Class == Class.JSR )
+                            {
+                                if ( inst.Value == 0xFFAC )
+                                {
+                                    if ( a < 0 )
+                                        throw new ApplicationException( "Call to switch bank, but A is not set." );
+
+                                    mappedBank = a;
+                                    originOffset = offset;
+                                }
+                                else if ( inst.Value == 0xE5E2 )
+                                {
+                                    int tableOffset = offset + instLen;
+                                    LabelRecord record;
+
+                                    if ( mappedBank >= 0
+                                        && _labelDb.Program.ByAddress.TryGetValue( tableOffset, out record ) )
+                                    {
+                                        // TODO: Validate the table length
+
+                                        for ( int i = 0; i < record.Length; i += 2 )
+                                        {
+                                            int o = tableOffset + i;
+                                            int addrEntry = _rom.Image[o] | (_rom.Image[o + 1] << 8);
+
+                                            if ( addrEntry >= 0xC000 )
+                                            {
+                                                int branchOffset = addrEntry - bankInfo.Address + bankInfo.Offset;
+                                                branches.Enqueue( new BranchInfo( branchOffset, mappedBank, originOffset ) );
+                                            }
+                                        }
+
+                                        if ( !firstIter )
+                                            break;
+                                    }
+                                }
+                                else
+                                {
+                                    branch = true;
+                                }
+                            }
+                            else if ( inst.Class == Class.RTS || inst.Class == Class.RTI )
+                            {
+                                if ( !firstIter )
+                                    break;
+                            }
+                            else if ( inst.Class == Class.JMP )
+                            {
+                                if ( inst.Mode == Mode.a )
+                                    branch = true;
+
+                                invalidateBankAfterBranch = true;
+
+                                if ( !firstIter )
+                                    breakAfterBranch = true;
+                            }
+                            else if ( inst.Mode == Mode.r )
+                            {
+                                branch = true;
+                            }
+
+                            if ( branch && inst.Value >= 0xC000 && mappedBank >= 0 )
+                            {
+                                int branchOffset = inst.Value - bankInfo.Address + bankInfo.Offset;
+                                branches.Enqueue( new BranchInfo( branchOffset, mappedBank, originOffset ) );
+                            }
+
+                            if ( invalidateBankAfterBranch )
+                            {
+                                mappedBank = -1;
+                                originOffset = -1;
+                            }
+
+                            if ( breakAfterBranch )
+                                break;
+
+                            offset += instLen;
+                            addr += instLen;
+                        }
+                        else
+                        {
+                            if ( !firstIter )
+                                break;
+
+                            mappedBank = -1;
+                            originOffset = -1;
+
+                            offset++;
+                            addr++;
+                        }
+                    }
+
+                    firstIter = false;
+                }
+            }
+        }
+
+        private void ReportTracedCalls()
+        {
+            var disasm = new Disasm6502.Disassembler();
+
+            foreach ( var bankInfo in _config.Banks )
+            {
+                if ( bankInfo.Address != 0xC000 )
+                    continue;
+
+                int endOffset = bankInfo.Offset + bankInfo.Size;
+                int addr = bankInfo.Address;
+
+                ProcessBankCode( bankInfo.Offset, endOffset, addr, ProcessInstruction );
+            }
+
+            void ProcessInstruction( InstDisasm inst, int offset )
+            {
+                if ( (inst.Class == Class.JMP || inst.Class == Class.JSR)
+                    && IsAbsolute( inst.Mode ) && inst.Value >= 0x8000 && inst.Value < 0xC000 )
+                {
+                    bool   traced = (_tracedCoverage[offset] & 0x40) != 0;
+                    bool   mapped = (_tracedCoverage[offset] & TracedBankKnownFlag) != 0;
+                    int    bank = _tracedCoverage[offset] & 0x0F;
+                    string memName = null;
+                    bool   labelNotFound = false;
+
+                    Console.Write( traced ? "T " : "  " );
+
+                    if ( mapped )
+                        Console.Write( "{0:X1} ", bank );
+                    else
+                        Console.Write( "  " );
+
+                    if ( mapped )
+                    {
+                        // TODO: for now, assume that prog banks are in the right order
+                        int labelOffset = inst.Value - 0x8000 + _config.Banks[bank].Offset;
+
+                        if ( _labelDb.Program.ByAddress.TryGetValue( labelOffset, out LabelRecord record ) )
+                        {
+                            memName = record.Name;
+                            _importsForFixedBank.Add( record );
+                        }
+                        else
+                        {
+                            labelNotFound = true;
+                        }
+                    }
+
+                    Console.Write( "{0:X5}: ", offset );
+                    disasm.Format( inst, memName, Console.Out );
+                    if ( mapped )
+                        Console.Write( " \t({0:X5})", _originCoverage[offset] );
+                    Console.WriteLine();
+
+                    if ( labelNotFound )
+                    {
+                        Console.WriteLine(
+                            "  Bank {0} was found was mapped, but a label wasn't found for address {1:X4}.",
+                            bank, inst.Value );
+                    }
+                }
+            }
+        }
+
+        private void CollateNonFixedExports()
+        {
+            _exportsByBank = new List<string>[_config.Banks.Count];
+
+            for ( int i = 0; i < _config.Banks.Count; i++ )
+                _exportsByBank[i] = new List<string>();
+
+            foreach ( var record in _importsForFixedBank )
+            {
+                if ( record.Type != LabelType.Program )
+                    continue;
+
+                // We know that every bank is 0x4000 bytes.
+
+                int bank = (int) ((uint) record.Address >> 14);
+
+                _exportsByBank[bank].Add( record.Name );
+            }
+        }
+
+        private void TraceCallsToFixedBank()
+        {
+            int bankNumber = -1;
+
+            foreach ( var bankInfo in _config.Banks )
+            {
+                bankNumber++;
+
+                if ( bankInfo.Address == 0xC000 )
+                    continue;
+
+                int endOffset = bankInfo.Offset + bankInfo.Size;
+                int addr = bankInfo.Address;
+
+                ProcessBankCode( bankInfo.Offset, endOffset, addr, ProcessInstruction );
+            }
+
+            void ProcessInstruction( InstDisasm inst, int offset )
+            {
+                if ( (inst.Class == Class.JMP || inst.Class == Class.JSR)
+                    && inst.Mode == Mode.a
+                    && inst.Value >= 0xC000 )
+                {
+                    int targetOffset = inst.Value - 0xC000 + 0x1C000;
+
+                    _tracedCoverage[targetOffset] = (byte) (bankNumber | 0x20);
+                    _originCoverage[targetOffset] = offset;
+                }
+            }
         }
 
         private void MarkSaveRamCodeCoverage()
@@ -439,8 +803,6 @@ namespace emu2asm.NesMlb
         {
             // Generate labels for jumps in code copied to Save RAM.
 
-            var disasm = new Disasm6502.Disassembler();
-
             foreach ( var bankInfo in _config.Banks )
             {
                 if ( bankInfo.RomToRam == null )
@@ -449,69 +811,77 @@ namespace emu2asm.NesMlb
                 var romToRam = bankInfo.RomToRam;
                 int startOffset = (bankInfo.RomToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
                 int endOffset = startOffset + bankInfo.RomToRam.Size;
-                int endRamAddr = romToRam.RamAddress + romToRam.Size;
-
                 int addr = romToRam.RamAddress;
 
                 if ( bankInfo.RomToRam.Type == MemoryUse.Data )
-                {
                     Array.Fill<byte>( _coverage, 0x02, startOffset, romToRam.Size );
-                    continue;
-                }
+                else
+                    ProcessBankCode( startOffset, endOffset, addr, ProcessInstruction );
+            }
 
-                for ( int offset = startOffset; offset < endOffset; offset++ )
+            void ProcessInstruction( InstDisasm inst, int offset )
+            {
+                if ( inst.Mode != Mode.r )
+                    return;
+
+                int relAddr = inst.Value - 0x6000;
+                string labelName = string.Format( "L{0:X4}", inst.Value );
+
+                // If found, then it has a comment but no name.
+
+                if ( !_labelDb.SaveRam.ByName.TryGetValue( labelName, out LabelRecord record ) )
                 {
-                    byte c = _coverage[offset];
-
-                    if ( (c & 0x11) != 0 )
+                    if ( !_labelDb.SaveRam.ByAddress.TryGetValue( relAddr, out record ) )
                     {
-                        disasm.PC = (ushort) addr;
-                        InstDisasm inst = disasm.Disassemble( _rom.Image, offset );
-
-                        int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
-
-                        if ( instLen < 1 )
+                        record = new LabelRecord
                         {
-                            string message = string.Format( "Found a bad instruction at program offset {0:X5}", offset );
-                            throw new ApplicationException( message );
-                        }
+                            Address = relAddr,
+                            Name = labelName,
+                            Length = 1
+                        };
 
-                        offset += instLen - 1;
-                        addr += instLen;
-
-                        if ( inst.Mode == Mode.r )
-                        {
-                            int relAddr = inst.Value - 0x6000;
-                            string labelName = string.Format( "L{0:X4}", inst.Value );
-
-                            // If found, then it has a comment but no name.
-
-                            if ( !_labelDb.SaveRam.ByName.TryGetValue( labelName, out LabelRecord record ) )
-                            {
-                                if ( !_labelDb.SaveRam.ByAddress.TryGetValue( relAddr, out record ) )
-                                {
-                                    record = new LabelRecord
-                                    {
-                                        Address = relAddr,
-                                        Name = labelName,
-                                        Length = 1
-                                    };
-
-                                    _labelDb.SaveRam.ByAddress.Add( relAddr, record );
-                                }
-                                else
-                                {
-                                    record.Name = labelName;
-                                }
-
-                                _labelDb.SaveRam.ByName.Add( record.Name, record );
-                            }
-                        }
+                        _labelDb.SaveRam.ByAddress.Add( relAddr, record );
                     }
                     else
                     {
-                        addr++;
+                        record.Name = labelName;
                     }
+
+                    _labelDb.SaveRam.ByName.Add( record.Name, record );
+                }
+            }
+        }
+
+        private delegate void ProcessInstructionDelegate( InstDisasm inst, int offset );
+
+        private void ProcessBankCode(
+            int startOffset, int endOffset, int addr,
+            ProcessInstructionDelegate processInstruction )
+        {
+            var disasm = new Disasm6502.Disassembler();
+
+            for ( int offset = startOffset; offset < endOffset; )
+            {
+                byte c = _coverage[offset];
+
+                if ( (c & 0x11) != 0 )
+                {
+                    disasm.PC = (ushort) addr;
+                    InstDisasm inst = disasm.Disassemble( _rom.Image, offset );
+
+                    int  instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
+                    if ( instLen < 1 )
+                        ThrowBadInstructionError( offset );
+
+                    processInstruction( inst, offset );
+
+                    offset += instLen;
+                    addr += instLen;
+                }
+                else
+                {
+                    offset++;
+                    addr++;
                 }
             }
         }
@@ -559,6 +929,14 @@ namespace emu2asm.NesMlb
                 }
             }
             writer.WriteLine( "}" );
+        }
+
+        private static void ThrowBadInstructionError( int offset )
+        {
+            string message = string.Format(
+                "Found a bad instruction at program offset {0:X5}",
+                offset );
+            throw new ApplicationException( message );
         }
     }
 }

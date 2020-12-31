@@ -5,8 +5,18 @@ using System.IO;
 
 namespace emu2asm.NesMlb
 {
+    enum LabelType
+    {
+        Program,
+        Ram,
+        SaveRam,
+        WorkRam,
+        Registers,
+    }
+
     class LabelRecord
     {
+        public LabelType Type;
         public string Name;
         public int Address;
         public int Length;
@@ -76,11 +86,11 @@ namespace emu2asm.NesMlb
 
                 switch ( type )
                 {
-                    case 'P': labelNamespace = db.Program; break;
-                    case 'R': labelNamespace = db.Ram; break;
-                    case 'S': labelNamespace = db.SaveRam; break;
-                    case 'W': labelNamespace = db.WorkRam; break;
-                    case 'G': labelNamespace = db.Registers; break;
+                    case 'P': labelNamespace = db.Program;   record.Type = LabelType.Program; break;
+                    case 'R': labelNamespace = db.Ram;       record.Type = LabelType.Ram; break;
+                    case 'S': labelNamespace = db.SaveRam;   record.Type = LabelType.SaveRam; break;
+                    case 'W': labelNamespace = db.WorkRam;   record.Type = LabelType.WorkRam; break;
+                    case 'G': labelNamespace = db.Registers; record.Type = LabelType.Registers; break;
                     default:
                         break;
                 }
