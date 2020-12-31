@@ -30,7 +30,10 @@ namespace emu2asm.NesMlb
 
         public void Disassemble()
         {
+            ClearUnusedCoverageBit();
             TraceCode();
+            MarkSaveRamCodeCoverage();
+            GenerateSaveRamJumpLabels();
 
             // TODO: Only include definitions that are used in each bank.
 
@@ -384,43 +387,24 @@ namespace emu2asm.NesMlb
             return false;
         }
 
-        private enum TracedOrigin : byte
-        {
-            Unknown,
-            Evident,
-            Traced
-        }
-
-        private const byte TracedOriginMask = 3;
         private const byte TracedBankKnownFlag = 4;
-        private const byte TracedBankMask = 0x38;
-        private const byte TracedBankShift = 3;
 
-        private void TraceCode()
+        private void ClearUnusedCoverageBit()
         {
-            // Mark the code bytes that we were given.
+            // Make sure unused bit 7 is truly unused.
 
             for ( int i = 0; i < _coverage.Length; i++ )
             {
-                byte c = _coverage[i];
-
-                // 0x11: Code and code accessed indirectly
-
-                if ( (c & 0x11) != 0 )
-                {
-                    uint t = (uint) TracedOrigin.Evident;
-                    uint bank = (uint) i >> 14;
-
-                    if ( bank < 7 )
-                    {
-                        t |= (bank << TracedBankShift);
-                        t |= TracedBankKnownFlag;
-                    }
-
-                    _tracedCoverage[i] = (byte) t;
-                }
+                _coverage[i] &= 0x7F;
             }
+        }
 
+        private void TraceCode()
+        {
+        }
+
+        private void MarkSaveRamCodeCoverage()
+        {
             // Mark the code bytes that are copied to Save RAM.
 
             foreach ( var bankInfo in _config.Banks )
@@ -449,7 +433,10 @@ namespace emu2asm.NesMlb
                     Array.Fill<byte>( _coverage, 0x02, offset, record.Length );
                 }
             }
+        }
 
+        private void GenerateSaveRamJumpLabels()
+        {
             // Generate labels for jumps in code copied to Save RAM.
 
             var disasm = new Disasm6502.Disassembler();
