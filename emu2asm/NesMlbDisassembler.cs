@@ -58,7 +58,9 @@ namespace emu2asm.NesMlb
 
                 int address = pair.Value.Address + 0x6000;
 
-                if ( address < 0x67F0 )
+                // TODO: hardcoded addresses
+
+                if ( address < 0x67F0 || address >= 0x7F00 )
                 {
                     builder.AppendFormat( "{0} := {1}\n", pair.Key, address );
                 }
@@ -81,7 +83,7 @@ namespace emu2asm.NesMlb
 
                 // TODO: IMPORT as needed
 
-                builder.AppendFormat( ".IMPORT {0}\n", pair.Key );
+                builder.AppendFormat( ".GLOBAL {0}\n", pair.Key );
             }
 
             string definitions = builder.ToString();
@@ -123,6 +125,9 @@ namespace emu2asm.NesMlb
 
                     writer.WriteLine( "\n.SEGMENT \"{0}\"\n", segment.Name );
                 }
+
+                if ( romOffset == 0xABB5 )
+                    Debugger.Break();
 
                 ushort pc = (ushort) segment.GetAddress( romOffset );
 
@@ -464,6 +469,12 @@ namespace emu2asm.NesMlb
 
                 int addr = romToRam.RamAddress;
 
+                if ( bankInfo.RomToRam.Type == MemoryUse.Data )
+                {
+                    Array.Fill<byte>( _coverage, 0x02, startOffset, romToRam.Size );
+                    continue;
+                }
+
                 for ( int offset = startOffset; offset < endOffset; offset++ )
                 {
                     byte c = _coverage[offset];
@@ -525,7 +536,7 @@ namespace emu2asm.NesMlb
         {
             using var writer = new StreamWriter( "nes.cfg", false, System.Text.Encoding.ASCII );
 
-            writer.WriteLine( "MEMORY\n{\n" );
+            writer.WriteLine( "MEMORY\n{" );
             foreach ( var bankInfo in _config.Banks )
             {
                 writer.WriteLine(
@@ -545,7 +556,7 @@ namespace emu2asm.NesMlb
             }
             writer.WriteLine( "}\n" );
 
-            writer.WriteLine( "SEGMENTS\n{\n" );
+            writer.WriteLine( "SEGMENTS\n{" );
             foreach ( var bankInfo in _config.Banks )
             {
                 writer.WriteLine(

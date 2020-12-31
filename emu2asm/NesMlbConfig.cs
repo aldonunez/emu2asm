@@ -65,11 +65,19 @@ namespace emu2asm.NesMlb
         public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
     }
 
+    public enum MemoryUse
+    {
+        Mixed,
+        Code,
+        Data,
+    }
+
     public class RomToRamMapping : IXmlSerializable
     {
         public int RomAddress;
         public int RamAddress;
         public int Size;
+        public MemoryUse Type;
 
         public XmlSchema GetSchema() => null;
 
@@ -97,6 +105,10 @@ namespace emu2asm.NesMlb
 
                     case "Size":
                         Size = int.Parse( content, NumberStyles.HexNumber );
+                        break;
+
+                    case "Type":
+                        Type = Enum.Parse<MemoryUse>( content, true );
                         break;
                 }
             }
