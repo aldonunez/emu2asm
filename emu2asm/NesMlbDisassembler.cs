@@ -50,12 +50,39 @@ namespace emu2asm.NesMlb
                 builder.AppendFormat( "{0} := ${1:X2}\n", pair.Key, address );
             }
 
-            //foreach ( var pair in _labelDb.SaveRam.ByName )
-            //{
-            //    uint address = pair.Value.Address;
+            builder.AppendLine();
 
-            //    builder.AppendFormat( "{0} := {1}\n", pair.Key, address );
-            //}
+            foreach ( var pair in _labelDb.SaveRam.ByName )
+            {
+                // TODO:
+
+                int address = pair.Value.Address + 0x6000;
+
+                if ( address < 0x67F0 )
+                {
+                    builder.AppendFormat( "{0} := {1}\n", pair.Key, address );
+                }
+                else
+                {
+                    // TODO: IMPORT as needed
+
+                    builder.AppendFormat( ".GLOBAL {0}\n", pair.Key );
+                }
+            }
+
+            builder.AppendLine();
+
+            foreach ( var pair in _labelDb.Program.ByName )
+            {
+                // TODO:
+
+                if ( pair.Value.Address < 0x1C000 )
+                    continue;
+
+                // TODO: IMPORT as needed
+
+                builder.AppendFormat( ".IMPORT {0}\n", pair.Key );
+            }
 
             string definitions = builder.ToString();
 
