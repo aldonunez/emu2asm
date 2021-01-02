@@ -8,6 +8,53 @@ using NumberStyles = System.Globalization.NumberStyles;
 
 namespace emu2asm.NesMlb
 {
+    internal record Import
+    {
+        public LabelRecord Label;
+    }
+
+    internal record Export
+    {
+        public LabelRecord Label;
+    }
+
+    internal enum SegmentType
+    {
+        Program,
+        SaveRam,
+    }
+
+    internal record Segment
+    {
+        public SegmentType Type;
+        public Bank Parent;
+        public int Id;
+        public string Name;
+        public int Offset;
+        public int Address;
+        public int Size;
+        public int NamespaceBase;
+        public LabelNamespace Namespace;
+
+        public readonly Dictionary<int, Import> Imports = new();
+        public readonly Dictionary<int, Export> Exports = new();
+
+        public bool IsAddressInside( int address )
+        {
+            return (address >= Address) && (address < Address + Size);
+        }
+
+        public int GetAddress( int offset )
+        {
+            return (offset - Offset) + Address;
+        }
+
+        public int GetNamespaceOffset( int offset )
+        {
+            return offset - NamespaceBase;
+        }
+    }
+
     public class Bank : IXmlSerializable
     {
         public string Id;
@@ -15,6 +62,7 @@ namespace emu2asm.NesMlb
         public int Address;
         public int Size;
         public RomToRamMapping RomToRam;
+        internal readonly List<Segment> Segments = new();
 
         public XmlSchema GetSchema() => null;
 

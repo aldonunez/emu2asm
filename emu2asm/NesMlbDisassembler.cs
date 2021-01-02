@@ -1,6 +1,4 @@
-﻿#define GLOBALS
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -18,13 +16,9 @@ namespace emu2asm.NesMlb
         private byte[] _tracedCoverage;
         private int[] _originCoverage;
 
-        private List<LabelRecord> _importsForFixedBank = new();
-        private List<string>[] _exportsByBank;
-
-        private Dictionary<int, LabelRecord>[] _importsByBank;
-        private string[] _exportsForFixedBank;
-
         private readonly LabelNamespace _nullNamepsace = new();
+
+        private List<Segment> _segments = new();
 
         public Disassembler(
             Config config,
@@ -40,17 +34,90 @@ namespace emu2asm.NesMlb
             _tracedCoverage = new byte[coverageImage.Length];
             _originCoverage = new int[coverageImage.Length];
 
-            _importsByBank = new Dictionary<int, LabelRecord>[_config.Banks.Count];
+            MakeSegments();
+        }
 
-            for ( int i = 0; i < _config.Banks.Count; i++ )
-                _importsByBank[i] = new Dictionary<int, LabelRecord>();
+        private void MakeSegments()
+        {
+            foreach ( var bankInfo in _config.Banks )
+            {
+                var romToRam = bankInfo.RomToRam;
+                int externalOffset = 0;
+
+                string baseName = "BANK_" + bankInfo.Id;
+                int baseSize;
+
+                if ( bankInfo.RomToRam == null || romToRam.Size == 0 )
+                {
+                    baseSize = bankInfo.Size;
+                }
+                else
+                {
+                    externalOffset = (romToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
+                    baseSize = externalOffset - bankInfo.Offset;
+                }
+
+                if ( baseSize > 0 )
+                {
+                    var segment = new Segment
+                    {
+                        Type = SegmentType.Program,
+                        Parent = bankInfo,
+                        Id = _segments.Count,
+                        Name = baseName,
+                        Address = bankInfo.Address,
+                        Offset = bankInfo.Offset,
+                        Size = baseSize,
+                        Namespace = _labelDb.Program,
+                        NamespaceBase = 0
+                    };
+
+                    bankInfo.Segments.Add( segment );
+                    _segments.Add( segment );
+                }
+
+                if ( romToRam != null && romToRam.Size > 0 )
+                {
+                    var extSegment = new Segment
+                    {
+                        Type = SegmentType.SaveRam,
+                        Parent = bankInfo,
+                        Id = _segments.Count,
+                        Name = baseName + "_RAM",
+                        Address = romToRam.RamAddress,
+                        Offset = externalOffset,
+                        Size = romToRam.Size,
+                        Namespace = _labelDb.SaveRam,
+                        NamespaceBase = externalOffset + 0x6000 - romToRam.RamAddress
+                    };
+
+                    bankInfo.Segments.Add( extSegment );
+                    _segments.Add( extSegment );
+
+                    var contSegment = new Segment
+                    {
+                        Type = SegmentType.Program,
+                        Parent = bankInfo,
+                        Id = _segments.Count,
+                        Name = baseName + "_CONT",
+                        Address = romToRam.RomAddress + romToRam.Size,
+                        Offset = externalOffset + romToRam.Size,
+                        Size = bankInfo.Size - baseSize - romToRam.Size,
+                        Namespace = _labelDb.Program,
+                        NamespaceBase = 0
+                    };
+
+                    bankInfo.Segments.Add( contSegment );
+                    _segments.Add( contSegment );
+                }
+            }
         }
 
         public void Disassemble()
         {
             ClearUnusedCoverageBit();
-            TraceCode();
             MarkSaveRamCodeCoverage();
+            TraceCode();
             GenerateSaveRamJumpLabels();
 
             // TODO: Only include definitions that are used in each bank.
@@ -96,22 +163,6 @@ namespace emu2asm.NesMlb
 
             builder.AppendLine();
 
-#if GLOBALS
-            foreach ( var pair in _labelDb.Program.ByName )
-            {
-                // TODO:
-
-                if ( pair.Value.Address < 0x1C000 )
-                    continue;
-
-                // TODO: IMPORT as needed
-
-                builder.AppendFormat( ".GLOBAL {0}\n", pair.Key );
-            }
-
-            builder.AppendLine();
-#endif
-
             string definitions = builder.ToString();
 
             foreach ( var bank in _config.Banks )
@@ -126,209 +177,115 @@ namespace emu2asm.NesMlb
         {
             var disasm = new Disasm6502.Disassembler();
             var dataBlock = new DataBlock();
-            var segment = FindSegment( bankInfo.Offset, bankInfo );
 
             // TODO: delete all ASM files beforehand?
 
             string filename = string.Format( "Z_{0}.asm", bankInfo.Id );
 
             using var writer = new StreamWriter( filename, false, System.Text.Encoding.ASCII );
+            int segIx = -1;
 
-            writer.WriteLine();
-            writer.WriteLine( ".SEGMENT \"{0}\"", segment.Name );
-            writer.WriteLine();
-            writer.WriteLine( definitions );
-
-#if !GLOBALS
-            if ( bankInfo.Address == 0xC000 )
+            foreach ( var segment in bankInfo.Segments )
             {
-                foreach ( var name in _exportsForFixedBank )
+                segIx++;
+
+                FlushDataBlock( dataBlock, writer );
+
+                writer.WriteLine();
+                writer.WriteLine( ".SEGMENT \"{0}\"", segment.Name );
+                writer.WriteLine();
+
+                if ( segIx == 0 )
                 {
-                    writer.WriteLine( ".EXPORT {0}", name );
-                }
-            }
-            else
-            {
-                int bankNumber = int.Parse( bankInfo.Id );
-
-                foreach ( var pair in _importsByBank[bankNumber] )
-                {
-                    writer.WriteLine( ".IMPORT {0}", pair.Value.Name );
-                }
-            }
-#endif
-
-            if ( bankInfo.Address == 0xC000 )
-            {
-                foreach ( var record in _importsForFixedBank )
-                {
-                    writer.WriteLine( ".IMPORT {0}", record.Name );
-                }
-            }
-            else
-            {
-                int bankNumber = int.Parse( bankInfo.Id );
-
-                foreach ( var name in _exportsByBank[bankNumber] )
-                {
-                    writer.WriteLine( ".EXPORT {0}", name );
-                }
-            }
-
-            int endOffset = bankInfo.Offset + bankInfo.Size;
-
-            for ( int romOffset = bankInfo.Offset; romOffset < endOffset; romOffset++ )
-            {
-                if ( !segment.IsOffsetInside( romOffset ) )
-                {
-                    FlushDataBlock( dataBlock, writer );
-
-                    segment = FindSegment( romOffset, bankInfo );
-
-                    writer.WriteLine( "\n.SEGMENT \"{0}\"\n", segment.Name );
+                    writer.WriteLine( definitions );
                 }
 
-                ushort pc = (ushort) segment.GetAddress( romOffset );
-
-                int nsOffset = segment.GetNamespaceOffset( romOffset );
-
-                if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out var record ) )
+                foreach ( var import in segment.Imports.Values )
                 {
-                    if ( !string.IsNullOrEmpty( record.Name ) )
+                    writer.WriteLine( ".IMPORT {0}", import.Label.Name );
+                }
+
+                writer.WriteLine();
+
+                foreach ( var export in segment.Exports.Values )
+                {
+                    writer.WriteLine( ".EXPORT {0}", export.Label.Name );
+                }
+
+                writer.WriteLine();
+
+                int endOffset = segment.Offset + segment.Size;
+
+                for ( int romOffset = segment.Offset; romOffset < endOffset; romOffset++ )
+                {
+                    ushort pc = (ushort) segment.GetAddress( romOffset );
+
+                    int nsOffset = segment.GetNamespaceOffset( romOffset );
+
+                    if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out var record ) )
+                    {
+                        if ( !string.IsNullOrEmpty( record.Name ) )
+                        {
+                            FlushDataBlock( dataBlock, writer );
+
+                            writer.WriteLine( "{0}:", record.Name );
+                        }
+
+                        // TODO: comments
+                    }
+
+                    byte c = _coverage[romOffset];
+
+                    if ( (c & 0x11) != 0 )
                     {
                         FlushDataBlock( dataBlock, writer );
 
-                        writer.WriteLine( "{0}:", record.Name );
-                    }
+                        disasm.PC = pc;
+                        InstDisasm inst = disasm.Disassemble( _rom.Image, romOffset );
+                        string memoryName = null;
 
-                    // TODO: comments
-                }
+                        int  instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
+                        if ( instLen < 1 )
+                            ThrowBadInstructionError( romOffset );
 
-                byte c = _coverage[romOffset];
+                        if ( IsZeroPage( inst.Mode ) || inst.Mode == Mode.r
+                            || (IsAbsolute( inst.Mode ) && !WritesToRom( inst )) )
+                        {
+                            record = FindAbsoluteAddress( segment, inst, romOffset );
 
-                if ( (c & 0x11) != 0 )
-                {
-                    FlushDataBlock( dataBlock, writer );
+                            if ( record != null && !string.IsNullOrEmpty( record.Name ) )
+                                memoryName = record.Name;
+                        }
 
-                    disasm.PC = pc;
-                    InstDisasm inst = disasm.Disassemble( _rom.Image, romOffset );
-                    string memoryName = null;
-
-                    int  instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
-                    if ( instLen < 1 )
-                        ThrowBadInstructionError( romOffset );
-
-                    if ( IsZeroPage( inst.Mode ) || inst.Mode == Mode.r
-                        || (IsAbsolute( inst.Mode ) && !WritesToRom( inst )) )
-                    {
-                        record = FindAbsoluteAddress( bankInfo, inst, romOffset );
-
-                        if ( record != null && !string.IsNullOrEmpty( record.Name ) )
-                            memoryName = record.Name;
-                    }
-
-                    writer.Write( "    " );
-                    disasm.Format( inst, memoryName, writer );
-                    writer.WriteLine();
-
-                    if ( inst.Class == Class.JMP
-                        || inst.Class == Class.RTS
-                        || inst.Class == Class.RTI )
+                        writer.Write( "    " );
+                        disasm.Format( inst, memoryName, writer );
                         writer.WriteLine();
 
-                    romOffset += instLen - 1;
-                }
-                else
-                {
-                    if ( dataBlock.Known != ((c & 0x22) != 0) )
-                    {
-                        FlushDataBlock( dataBlock, writer );
+                        if ( inst.Class == Class.JMP
+                            || inst.Class == Class.RTS
+                            || inst.Class == Class.RTI )
+                            writer.WriteLine();
+
+                        romOffset += instLen - 1;
                     }
-
-                    if ( dataBlock.Size == 0 )
+                    else
                     {
-                        dataBlock.Offset = romOffset;
-                        dataBlock.Known = (c & 0x22) != 0;
+                        if ( dataBlock.Known != ((c & 0x22) != 0) )
+                        {
+                            FlushDataBlock( dataBlock, writer );
+                        }
+
+                        if ( dataBlock.Size == 0 )
+                        {
+                            dataBlock.Offset = romOffset;
+                            dataBlock.Known = (c & 0x22) != 0;
+                        }
+
+                        dataBlock.Size++;
                     }
-
-                    dataBlock.Size++;
                 }
-            }
 
-            FlushDataBlock( dataBlock, writer );
-        }
-
-        private Segment FindSegment( int offset, Bank bankInfo )
-        {
-            string name = "BANK_" + bankInfo.Id;
-
-            if ( bankInfo.RomToRam != null )
-            {
-                var romToRam = bankInfo.RomToRam;
-                int segmentOffset = (romToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
-                int endOffset = segmentOffset + romToRam.Size;
-
-                if ( offset >= segmentOffset && offset < endOffset )
-                    return new Segment(
-                        segmentOffset,
-                        romToRam.RamAddress,
-                        romToRam.Size,
-                        _labelDb.SaveRam,
-                        segmentOffset + 0x6000 - romToRam.RamAddress,
-                        name + "_RAM" );
-
-                if ( offset < endOffset )
-                    return new Segment(
-                        bankInfo.Offset,
-                        bankInfo.Address,
-                        segmentOffset - bankInfo.Offset,
-                        _labelDb.Program, 0, name );
-
-                name += "_CONT";
-            }
-
-            return new Segment(
-                bankInfo.Offset,
-                bankInfo.Address,
-                bankInfo.Size,
-                _labelDb.Program, 0, name );
-        }
-
-        private record Segment
-        {
-            public int Offset;
-            public int Address;
-            public int Size;
-            public LabelNamespace Namespace;
-            public int NamespaceBase;
-            public string Name;
-
-            public Segment(
-                int offset, int address, int size,
-                LabelNamespace labelNamespace, int nsBase, string name )
-            {
-                Offset = offset;
-                Address = address;
-                Size = size;
-                Namespace = labelNamespace;
-                NamespaceBase = nsBase;
-                Name = name;
-            }
-
-            public bool IsOffsetInside( int offset )
-            {
-                int endOffset = Offset + Size;
-                return offset >= Offset && offset < endOffset;
-            }
-
-            public int GetAddress( int offset )
-            {
-                return (offset - Offset) + Address;
-            }
-
-            public int GetNamespaceOffset( int offset )
-            {
-                return offset - NamespaceBase;
+                FlushDataBlock( dataBlock, writer );
             }
         }
 
@@ -351,7 +308,7 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private LabelRecord FindAbsoluteAddress( Bank bankInfo, InstDisasm inst, int instOffset )
+        private LabelRecord FindAbsoluteAddress( Segment segment, InstDisasm inst, int instOffset )
         {
             LabelRecord record;
             LabelNamespace labelNamespace;
@@ -374,9 +331,9 @@ namespace emu2asm.NesMlb
             }
             else if ( inst.Value < 0xC000 )
             {
-                if ( bankInfo.Address == 0x8000 )
+                if ( segment.Type == SegmentType.Program && segment.Parent.Address == 0x8000 )
                 {
-                    absOffset = (inst.Value - 0x8000) + bankInfo.Offset;
+                    absOffset = (inst.Value - 0x8000) + segment.Parent.Offset;
                     labelNamespace = _labelDb.Program;
                 }
                 else
@@ -471,6 +428,12 @@ namespace emu2asm.NesMlb
             return inst.Value >= 0x8000;
         }
 
+        private static bool IsCallToSwitchableBank( InstDisasm inst )
+        {
+            return (inst.Class == Class.JMP || inst.Class == Class.JSR)
+                && inst.Mode == Mode.a && inst.Value >= 0x8000 && inst.Value < 0xC000;
+        }
+
         private const byte TracedBankKnownFlag = 0x80;
 
         private void ClearUnusedCoverageBit()
@@ -501,186 +464,289 @@ namespace emu2asm.NesMlb
         {
             TraceCallsToFixedBank();
             TraceCallsInFixedBank();
+
+            CollateSwitchableExports();
             ReportTracedCalls();
-            CollateFixedImports();
-            CollateFixedExports();
         }
 
         private void TraceCallsInFixedBank()
         {
+            TraceCallsInSegment( _config.Banks[7].Segments[0] );
+            TraceCallsInSegment( _config.Banks[1].Segments[1] );
+        }
+
+        private void TraceCallsInSegment( Segment segment )
+        {
+            var disasm = new Disasm6502.Disassembler();
+
+            var bankInfo = segment.Parent;
+
+            Debug.Assert( segment.Address < 0x8000 || segment.Address >= 0xC000 );
+
+            int  endOffset = bankInfo.Offset + bankInfo.Size;
+
+            int  a = -1;
+            int  mappedBank = -1;
+            int  originOffset = -1;
+            bool firstIter = true;
+            var  branches = new Queue<BranchInfo>();
+
+            branches.Enqueue( new BranchInfo( segment.Offset, -1, -1 ) );
+
+            while ( branches.Count > 0 )
+            {
+                BranchInfo branchInfo = branches.Dequeue();
+                mappedBank = branchInfo.MappedBank;
+                originOffset = branchInfo.OriginOffset;
+
+                if ( mappedBank == 4 )
+                    Console.WriteLine( "Processing branch" );
+
+                int offset = branchInfo.Offset;
+                int addr = segment.Address + (offset - segment.Offset);
+
+                while ( offset < endOffset )
+                {
+                    byte c = _coverage[offset];
+
+                    if ( (c & 0x11) != 0 )
+                    {
+                        if ( (_tracedCoverage[offset] & TracedBankKnownFlag) != 0 )
+                            break;
+
+                        if ( (_tracedCoverage[offset] & 0x20) != 0 )
+                        {
+                            mappedBank = _tracedCoverage[offset] & 0x0F;
+                            originOffset = _originCoverage[offset];
+                            _tracedCoverage[offset] = (byte) (_tracedCoverage[offset] & ~0x20);
+
+                            if ( mappedBank == 4 )
+                                Console.WriteLine( "Traced from bank 5" );
+                        }
+
+                        if ( !firstIter )
+                            _tracedCoverage[offset] |= 0x40;
+
+                        disasm.PC = (ushort) addr;
+                        InstDisasm inst = disasm.Disassemble( _rom.Image, offset );
+
+                        int  instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
+                        bool branch = false;
+                        bool breakAfterBranch = false;
+                        bool invalidateBankAfterBranch = false;
+
+                        if ( instLen < 1 )
+                            ThrowBadInstructionError( offset );
+
+                        if ( mappedBank >= 0 )
+                        {
+                            _tracedCoverage[offset] = (byte) (mappedBank | TracedBankKnownFlag);
+                            _originCoverage[offset] = originOffset;
+
+                            if ( mappedBank == 4 )
+                                Console.WriteLine( "{0:X5}", offset );
+                        }
+
+                        if ( inst.Class == Class.LDA )
+                        {
+                            if ( inst.Mode == Mode.I )
+                                a = inst.Value;
+                            else
+                                a = -1;
+                        }
+                        else if ( inst.Class == Class.JSR )
+                        {
+                            if ( inst.Value == 0xFFAC || inst.Value == 0xBFAC )
+                            {
+                                if ( a < 0 )
+                                    throw new ApplicationException( "Call to switch bank, but A is not set." );
+
+                                mappedBank = a;
+                                originOffset = offset;
+                            }
+                            else if ( inst.Value == 0xE5E2 )
+                            {
+                                int tableOffset = offset + instLen;
+                                LabelRecord record;
+
+                                if ( mappedBank >= 0
+                                    && _labelDb.Program.ByAddress.TryGetValue( tableOffset, out record ) )
+                                {
+                                    // TODO: Validate the table length
+
+                                    for ( int i = 0; i < record.Length; i += 2 )
+                                    {
+                                        int o = tableOffset + i;
+                                        int addrEntry = _rom.Image[o] | (_rom.Image[o + 1] << 8);
+
+                                        if ( segment.IsAddressInside( addrEntry ) )
+                                        {
+                                            Debug.Assert( segment.Type == SegmentType.Program );
+
+                                            int branchOffset = addrEntry - bankInfo.Address + bankInfo.Offset;
+                                            branches.Enqueue( new BranchInfo( branchOffset, mappedBank, originOffset ) );
+                                        }
+                                    }
+
+                                    if ( !firstIter )
+                                        break;
+                                }
+                            }
+                            else
+                            {
+                                branch = true;
+                            }
+                        }
+                        else if ( inst.Class == Class.RTS || inst.Class == Class.RTI )
+                        {
+                            if ( !firstIter )
+                                break;
+                        }
+                        else if ( inst.Class == Class.JMP )
+                        {
+                            if ( inst.Mode == Mode.a )
+                                branch = true;
+
+                            invalidateBankAfterBranch = true;
+
+                            if ( !firstIter )
+                                breakAfterBranch = true;
+                        }
+                        else if ( inst.Mode == Mode.r )
+                        {
+                            branch = true;
+                        }
+
+                        if ( branch && mappedBank >= 0 && segment.IsAddressInside( inst.Value ) )
+                        {
+                            int branchOffset;
+
+                            if ( segment.Type == SegmentType.Program )
+                                branchOffset = inst.Value - bankInfo.Address + bankInfo.Offset;
+                            else
+                                branchOffset = inst.Value - segment.Address + segment.Offset;
+
+                            branches.Enqueue( new BranchInfo( branchOffset, mappedBank, originOffset ) );
+                        }
+
+                        if ( invalidateBankAfterBranch )
+                        {
+                            mappedBank = -1;
+                            originOffset = -1;
+                        }
+
+                        if ( breakAfterBranch )
+                            break;
+
+                        offset += instLen;
+                        addr += instLen;
+                    }
+                    else
+                    {
+                        if ( !firstIter )
+                            break;
+
+                        mappedBank = -1;
+                        originOffset = -1;
+
+                        offset++;
+                        addr++;
+                    }
+                }
+
+                firstIter = false;
+            }
+        }
+
+        private void CollateSwitchableExports()
+        {
+            Segment curSegment;
+
             var disasm = new Disasm6502.Disassembler();
 
             foreach ( var bankInfo in _config.Banks )
             {
-                if ( bankInfo.Address != 0xC000 )
-                    continue;
-
-                int  endOffset = bankInfo.Offset + bankInfo.Size;
-
-                int  a = -1;
-                int  mappedBank = -1;
-                int  originOffset = -1;
-                bool firstIter = true;
-                var  branches = new Queue<BranchInfo>();
-
-                branches.Enqueue( new BranchInfo( bankInfo.Offset, -1, -1 ) );
-
-                while ( branches.Count > 0 )
+                foreach ( var segment in bankInfo.Segments )
                 {
-                    BranchInfo branchInfo = branches.Dequeue();
-                    mappedBank = branchInfo.MappedBank;
-                    originOffset = branchInfo.OriginOffset;
+                    if ( segment.Address >= 0x8000 && segment.Address < 0xC000 )
+                        continue;
 
-                    if ( mappedBank == 4 )
-                        Console.WriteLine( "Processing branch" );
+                    int endOffset = segment.Offset + segment.Size;
+                    int addr = segment.Address;
 
-                    int offset = branchInfo.Offset;
-                    int addr = bankInfo.Address + (offset - bankInfo.Offset);
-
-                    while ( offset < endOffset )
-                    {
-                        byte c = _coverage[offset];
-
-                        if ( (c & 0x11) != 0 )
-                        {
-                            if ( (_tracedCoverage[offset] & TracedBankKnownFlag) != 0 )
-                                break;
-
-                            if ( (_tracedCoverage[offset] & 0x20) != 0 )
-                            {
-                                mappedBank = _tracedCoverage[offset] & 0x0F;
-                                originOffset = _originCoverage[offset];
-                                _tracedCoverage[offset] = (byte) (_tracedCoverage[offset] & ~0x20);
-
-                                if ( mappedBank == 4 )
-                                    Console.WriteLine( "Traced from bank 5" );
-                            }
-
-                            if ( !firstIter )
-                                _tracedCoverage[offset] |= 0x40;
-
-                            disasm.PC = (ushort) addr;
-                            InstDisasm inst = disasm.Disassemble( _rom.Image, offset );
-
-                            int  instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
-                            bool branch = false;
-                            bool breakAfterBranch = false;
-                            bool invalidateBankAfterBranch = false;
-
-                            if ( instLen < 1 )
-                                ThrowBadInstructionError( offset );
-
-                            if ( mappedBank >= 0 )
-                            {
-                                _tracedCoverage[offset] = (byte) (mappedBank | TracedBankKnownFlag);
-                                _originCoverage[offset] = originOffset;
-
-                                if ( mappedBank == 4 )
-                                    Console.WriteLine( "{0:X5}", offset );
-                            }
-
-                            if ( inst.Class == Class.LDA )
-                            {
-                                if ( inst.Mode == Mode.I )
-                                    a = inst.Value;
-                                else
-                                    a = -1;
-                            }
-                            else if ( inst.Class == Class.JSR )
-                            {
-                                if ( inst.Value == 0xFFAC )
-                                {
-                                    if ( a < 0 )
-                                        throw new ApplicationException( "Call to switch bank, but A is not set." );
-
-                                    mappedBank = a;
-                                    originOffset = offset;
-                                }
-                                else if ( inst.Value == 0xE5E2 )
-                                {
-                                    int tableOffset = offset + instLen;
-                                    LabelRecord record;
-
-                                    if ( mappedBank >= 0
-                                        && _labelDb.Program.ByAddress.TryGetValue( tableOffset, out record ) )
-                                    {
-                                        // TODO: Validate the table length
-
-                                        for ( int i = 0; i < record.Length; i += 2 )
-                                        {
-                                            int o = tableOffset + i;
-                                            int addrEntry = _rom.Image[o] | (_rom.Image[o + 1] << 8);
-
-                                            if ( addrEntry >= 0xC000 )
-                                            {
-                                                int branchOffset = addrEntry - bankInfo.Address + bankInfo.Offset;
-                                                branches.Enqueue( new BranchInfo( branchOffset, mappedBank, originOffset ) );
-                                            }
-                                        }
-
-                                        if ( !firstIter )
-                                            break;
-                                    }
-                                }
-                                else
-                                {
-                                    branch = true;
-                                }
-                            }
-                            else if ( inst.Class == Class.RTS || inst.Class == Class.RTI )
-                            {
-                                if ( !firstIter )
-                                    break;
-                            }
-                            else if ( inst.Class == Class.JMP )
-                            {
-                                if ( inst.Mode == Mode.a )
-                                    branch = true;
-
-                                invalidateBankAfterBranch = true;
-
-                                if ( !firstIter )
-                                    breakAfterBranch = true;
-                            }
-                            else if ( inst.Mode == Mode.r )
-                            {
-                                branch = true;
-                            }
-
-                            if ( branch && inst.Value >= 0xC000 && mappedBank >= 0 )
-                            {
-                                int branchOffset = inst.Value - bankInfo.Address + bankInfo.Offset;
-                                branches.Enqueue( new BranchInfo( branchOffset, mappedBank, originOffset ) );
-                            }
-
-                            if ( invalidateBankAfterBranch )
-                            {
-                                mappedBank = -1;
-                                originOffset = -1;
-                            }
-
-                            if ( breakAfterBranch )
-                                break;
-
-                            offset += instLen;
-                            addr += instLen;
-                        }
-                        else
-                        {
-                            if ( !firstIter )
-                                break;
-
-                            mappedBank = -1;
-                            originOffset = -1;
-
-                            offset++;
-                            addr++;
-                        }
-                    }
-
-                    firstIter = false;
+                    curSegment = segment;
+                    ProcessBankCode( segment.Offset, endOffset, addr, ProcessInstruction );
                 }
             }
+
+            void ProcessInstruction( InstDisasm inst, int offset )
+            {
+                if ( IsCallToSwitchableBank( inst ) )
+                {
+                    int bank = GetBankMapping( offset );
+
+                    if ( bank >= 0 )
+                    {
+                        // TODO: for now, assume that prog banks are in the right order
+                        var bankInfo = _config.Banks[bank];
+                        int labelOffset = GetOffsetFromAddress( bankInfo, inst.Value );
+
+                        if ( _labelDb.Program.ByAddress.TryGetValue( labelOffset, out LabelRecord record ) )
+                        {
+                            var sourceSeg = FindSegmentByAddress( bankInfo, inst.Value );
+                            Debug.Assert( sourceSeg != null );
+
+                            if ( sourceSeg.Parent != curSegment.Parent )
+                            {
+                                AddImport( curSegment, record );
+                                AddExport( sourceSeg, record );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private void AddImport( Segment segment, LabelRecord record )
+        {
+            if ( !segment.Imports.ContainsKey( record.Address ) )
+            {
+                var import = new Import { Label = record };
+                segment.Imports.Add( record.Address, import );
+            }
+        }
+
+        private void AddExport( Segment segment, LabelRecord record )
+        {
+            if ( !segment.Exports.ContainsKey( record.Address ) )
+            {
+                var export = new Export { Label = record };
+                segment.Exports.Add( record.Address, export );
+            }
+        }
+
+        private int GetBankMapping( int offset )
+        {
+            bool   mapped = (_tracedCoverage[offset] & TracedBankKnownFlag) != 0;
+            int    bank = _tracedCoverage[offset] & 0x0F;
+
+            return mapped ? bank : -1;
+        }
+
+        private int GetOffsetFromAddress( Bank bankInfo, int address )
+        {
+            return address - bankInfo.Address + bankInfo.Offset;
+        }
+
+        private Segment FindSegmentByAddress( Bank bankInfo, int address )
+        {
+            foreach ( var segment in bankInfo.Segments )
+            {
+                if ( segment.IsAddressInside( address ) )
+                    return segment;
+            }
+
+            return null;
         }
 
         private void ReportTracedCalls()
@@ -700,12 +766,11 @@ namespace emu2asm.NesMlb
 
             void ProcessInstruction( InstDisasm inst, int offset )
             {
-                if ( (inst.Class == Class.JMP || inst.Class == Class.JSR)
-                    && IsAbsolute( inst.Mode ) && inst.Value >= 0x8000 && inst.Value < 0xC000 )
+                if ( IsCallToSwitchableBank( inst ) )
                 {
                     bool   traced = (_tracedCoverage[offset] & 0x40) != 0;
-                    bool   mapped = (_tracedCoverage[offset] & TracedBankKnownFlag) != 0;
-                    int    bank = _tracedCoverage[offset] & 0x0F;
+                    int    bank = GetBankMapping( offset );
+                    bool   mapped = bank >= 0;
                     string memName = null;
                     bool   labelNotFound = false;
 
@@ -719,12 +784,11 @@ namespace emu2asm.NesMlb
                     if ( mapped )
                     {
                         // TODO: for now, assume that prog banks are in the right order
-                        int labelOffset = inst.Value - 0x8000 + _config.Banks[bank].Offset;
+                        int labelOffset = GetOffsetFromAddress( _config.Banks[bank], inst.Value);
 
                         if ( _labelDb.Program.ByAddress.TryGetValue( labelOffset, out LabelRecord record ) )
                         {
                             memName = record.Name;
-                            _importsForFixedBank.Add( record );
                         }
                         else
                         {
@@ -748,60 +812,27 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private void CollateFixedImports()
-        {
-            _exportsByBank = new List<string>[_config.Banks.Count];
-
-            for ( int i = 0; i < _config.Banks.Count; i++ )
-                _exportsByBank[i] = new List<string>();
-
-            foreach ( var record in _importsForFixedBank )
-            {
-                if ( record.Type != LabelType.Program )
-                    continue;
-
-                // We know that every bank is 0x4000 bytes.
-
-                int bank = (int) ((uint) record.Address >> 14);
-
-                _exportsByBank[bank].Add( record.Name );
-            }
-        }
-
-        private void CollateFixedExports()
-        {
-            var records = new HashSet<LabelRecord>();
-
-            foreach ( var importMap in _importsByBank )
-            {
-                foreach ( var record in importMap.Values )
-                    records.Add( record );
-            }
-
-            _exportsForFixedBank = new string[records.Count];
-            int i = 0;
-
-            foreach ( var record in records )
-            {
-                _exportsForFixedBank[i++] = record.Name;
-            }
-        }
-
         private void TraceCallsToFixedBank()
         {
             int bankNumber = -1;
+            int segmentId = -1;
+            Segment sourceSeg = _config.Banks[7].Segments[0];
 
             foreach ( var bankInfo in _config.Banks )
             {
                 bankNumber++;
 
-                if ( bankInfo.Address == 0xC000 )
-                    continue;
+                foreach ( var segment in bankInfo.Segments )
+                {
+                    if ( segment.Address >= 0xC000 )
+                        continue;
 
-                int endOffset = bankInfo.Offset + bankInfo.Size;
-                int addr = bankInfo.Address;
+                    int endOffset = segment.Offset + segment.Size;
+                    int addr = segment.Address;
 
-                ProcessBankCode( bankInfo.Offset, endOffset, addr, ProcessInstruction );
+                    segmentId = segment.Id;
+                    ProcessBankCode( segment.Offset, endOffset, addr, ProcessInstruction );
+                }
             }
 
             void ProcessInstruction( InstDisasm inst, int offset )
@@ -812,16 +843,20 @@ namespace emu2asm.NesMlb
                     && inst.Mode == Mode.a
                     && inst.Value >= 0xC000 )
                 {
-                    _tracedCoverage[targetOffset] = (byte) (bankNumber | 0x20);
-                    _originCoverage[targetOffset] = offset;
+                    if ( _segments[segmentId].Type == SegmentType.Program )
+                    {
+                        _tracedCoverage[targetOffset] = (byte) (bankNumber | 0x20);
+                        _originCoverage[targetOffset] = offset;
+                    }
                 }
 
-                if ( IsAbsolute( inst.Mode ) && inst.Value >= 0xC000 )
+                if ( IsAbsolute( inst.Mode ) && inst.Value >= 0xC000
+                    && (sourceSeg.Parent != _segments[segmentId].Parent) )
                 {
-                    if ( !_importsByBank[bankNumber].TryGetValue( targetOffset, out LabelRecord record ) )
+                    if ( _labelDb.Program.ByAddress.TryGetValue( targetOffset, out LabelRecord record ) )
                     {
-                        if ( _labelDb.Program.ByAddress.TryGetValue( targetOffset, out record ) )
-                            _importsByBank[bankNumber].Add( targetOffset, record );
+                        AddImport( _segments[segmentId], record );
+                        AddExport( sourceSeg, record );
                     }
                 }
             }
