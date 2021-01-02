@@ -1,4 +1,6 @@
-﻿using System;
+﻿#define GLOBALS
+
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -19,6 +21,9 @@ namespace emu2asm.NesMlb
         private List<LabelRecord> _importsForFixedBank = new();
         private List<string>[] _exportsByBank;
 
+        private Dictionary<int, LabelRecord>[] _importsByBank;
+        private string[] _exportsForFixedBank;
+
         private readonly LabelNamespace _nullNamepsace = new();
 
         public Disassembler(
@@ -34,6 +39,11 @@ namespace emu2asm.NesMlb
 
             _tracedCoverage = new byte[coverageImage.Length];
             _originCoverage = new int[coverageImage.Length];
+
+            _importsByBank = new Dictionary<int, LabelRecord>[_config.Banks.Count];
+
+            for ( int i = 0; i < _config.Banks.Count; i++ )
+                _importsByBank[i] = new Dictionary<int, LabelRecord>();
         }
 
         public void Disassemble()
@@ -86,6 +96,7 @@ namespace emu2asm.NesMlb
 
             builder.AppendLine();
 
+#if GLOBALS
             foreach ( var pair in _labelDb.Program.ByName )
             {
                 // TODO:
@@ -99,6 +110,7 @@ namespace emu2asm.NesMlb
             }
 
             builder.AppendLine();
+#endif
 
             string definitions = builder.ToString();
 
@@ -126,6 +138,25 @@ namespace emu2asm.NesMlb
             writer.WriteLine( ".SEGMENT \"{0}\"", segment.Name );
             writer.WriteLine();
             writer.WriteLine( definitions );
+
+#if !GLOBALS
+            if ( bankInfo.Address == 0xC000 )
+            {
+                foreach ( var name in _exportsForFixedBank )
+                {
+                    writer.WriteLine( ".EXPORT {0}", name );
+                }
+            }
+            else
+            {
+                int bankNumber = int.Parse( bankInfo.Id );
+
+                foreach ( var pair in _importsByBank[bankNumber] )
+                {
+                    writer.WriteLine( ".IMPORT {0}", pair.Value.Name );
+                }
+            }
+#endif
 
             if ( bankInfo.Address == 0xC000 )
             {
@@ -471,7 +502,8 @@ namespace emu2asm.NesMlb
             TraceCallsToFixedBank();
             TraceCallsInFixedBank();
             ReportTracedCalls();
-            CollateNonFixedExports();
+            CollateFixedImports();
+            CollateFixedExports();
         }
 
         private void TraceCallsInFixedBank()
@@ -716,7 +748,7 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private void CollateNonFixedExports()
+        private void CollateFixedImports()
         {
             _exportsByBank = new List<string>[_config.Banks.Count];
 
@@ -733,6 +765,25 @@ namespace emu2asm.NesMlb
                 int bank = (int) ((uint) record.Address >> 14);
 
                 _exportsByBank[bank].Add( record.Name );
+            }
+        }
+
+        private void CollateFixedExports()
+        {
+            var records = new HashSet<LabelRecord>();
+
+            foreach ( var importMap in _importsByBank )
+            {
+                foreach ( var record in importMap.Values )
+                    records.Add( record );
+            }
+
+            _exportsForFixedBank = new string[records.Count];
+            int i = 0;
+
+            foreach ( var record in records )
+            {
+                _exportsForFixedBank[i++] = record.Name;
             }
         }
 
@@ -755,14 +806,23 @@ namespace emu2asm.NesMlb
 
             void ProcessInstruction( InstDisasm inst, int offset )
             {
+                int targetOffset = inst.Value - 0xC000 + 0x1C000;
+
                 if ( (inst.Class == Class.JMP || inst.Class == Class.JSR)
                     && inst.Mode == Mode.a
                     && inst.Value >= 0xC000 )
                 {
-                    int targetOffset = inst.Value - 0xC000 + 0x1C000;
-
                     _tracedCoverage[targetOffset] = (byte) (bankNumber | 0x20);
                     _originCoverage[targetOffset] = offset;
+                }
+
+                if ( IsAbsolute( inst.Mode ) && inst.Value >= 0xC000 )
+                {
+                    if ( !_importsByBank[bankNumber].TryGetValue( targetOffset, out LabelRecord record ) )
+                    {
+                        if ( _labelDb.Program.ByAddress.TryGetValue( targetOffset, out record ) )
+                            _importsByBank[bankNumber].Add( targetOffset, record );
+                    }
                 }
             }
         }
@@ -835,6 +895,7 @@ namespace emu2asm.NesMlb
                     {
                         record = new LabelRecord
                         {
+                            Type = LabelType.SaveRam,
                             Address = relAddr,
                             Name = labelName,
                             Length = 1
