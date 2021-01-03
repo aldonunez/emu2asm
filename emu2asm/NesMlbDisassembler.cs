@@ -200,19 +200,8 @@ namespace emu2asm.NesMlb
                     writer.WriteLine( definitions );
                 }
 
-                foreach ( var import in segment.Imports.Values )
-                {
-                    writer.WriteLine( ".IMPORT {0}", import.Label.Name );
-                }
-
-                writer.WriteLine();
-
-                foreach ( var export in segment.Exports.Values )
-                {
-                    writer.WriteLine( ".EXPORT {0}", export.Label.Name );
-                }
-
-                writer.WriteLine();
+                WriteImports( writer, segment );
+                WriteExports( writer, segment );
 
                 int endOffset = segment.Offset + segment.Size;
 
@@ -287,6 +276,64 @@ namespace emu2asm.NesMlb
 
                 FlushDataBlock( dataBlock, writer );
             }
+        }
+
+        private static void WriteExports( StreamWriter writer, Segment segment )
+        {
+            var exports = new Export[segment.Exports.Count];
+
+            segment.Exports.Values.CopyTo( exports, 0 );
+            Array.Sort( exports, ( a, b ) => a.Label.Name.CompareTo( b.Label.Name ) );
+
+            foreach ( var export in exports )
+            {
+                writer.WriteLine( ".EXPORT {0}", export.Label.Name );
+            }
+
+            writer.WriteLine();
+        }
+
+        private void WriteImports( StreamWriter writer, Segment segment )
+        {
+            List<Import>[] importsBySeg = new List<Import>[_segments.Count];
+
+            foreach ( var import in segment.Imports.Values )
+            {
+                int sourceId = import.Source.Id;
+
+                if ( _segments[sourceId].Type == SegmentType.Program )
+                    sourceId = _segments[sourceId].Parent.Segments[0].Id;
+
+                if ( importsBySeg[sourceId] == null )
+                    importsBySeg[sourceId] = new List<Import>();
+
+                importsBySeg[sourceId].Add( import );
+            }
+
+            foreach ( var importList in importsBySeg )
+            {
+                if ( importList != null && importList.Count > 0 )
+                {
+                    string sSource;
+
+                    if ( importList[0].Source.Type == SegmentType.Program )
+                        sSource = string.Format( "program bank {0}", importList[0].Source.Parent.Id );
+                    else
+                        sSource = string.Format( "RAM code bank {0}", importList[0].Source.Parent.Id );
+
+                    writer.WriteLine( "\n; Imports from {0}\n", sSource );
+
+                    var imports = importList.ToArray();
+                    Array.Sort( imports, ( a, b ) => a.Label.Name.CompareTo( b.Label.Name ) );
+
+                    foreach ( var import in imports )
+                    {
+                        writer.WriteLine( ".IMPORT {0}", import.Label.Name );
+                    }
+                }
+            }
+
+            writer.WriteLine();
         }
 
         private record DataBlock
@@ -698,7 +745,7 @@ namespace emu2asm.NesMlb
 
                             if ( sourceSeg.Parent != curSegment.Parent )
                             {
-                                AddImport( curSegment, record );
+                                AddImport( curSegment, record, sourceSeg );
                                 AddExport( sourceSeg, record );
                             }
                         }
@@ -707,11 +754,11 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private void AddImport( Segment segment, LabelRecord record )
+        private void AddImport( Segment segment, LabelRecord record, Segment source )
         {
             if ( !segment.Imports.ContainsKey( record.Address ) )
             {
-                var import = new Import { Label = record };
+                var import = new Import( record, source );
                 segment.Imports.Add( record.Address, import );
             }
         }
@@ -720,7 +767,7 @@ namespace emu2asm.NesMlb
         {
             if ( !segment.Exports.ContainsKey( record.Address ) )
             {
-                var export = new Export { Label = record };
+                var export = new Export( record );
                 segment.Exports.Add( record.Address, export );
             }
         }
@@ -855,7 +902,7 @@ namespace emu2asm.NesMlb
                 {
                     if ( _labelDb.Program.ByAddress.TryGetValue( targetOffset, out LabelRecord record ) )
                     {
-                        AddImport( _segments[segmentId], record );
+                        AddImport( _segments[segmentId], record, sourceSeg );
                         AddExport( sourceSeg, record );
                     }
                 }

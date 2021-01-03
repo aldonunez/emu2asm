@@ -11,11 +11,23 @@ namespace emu2asm.NesMlb
     internal record Import
     {
         public LabelRecord Label;
+        public Segment Source;
+
+        public Import( LabelRecord label, Segment source )
+        {
+            Label = label;
+            Source = source;
+        }
     }
 
     internal record Export
     {
         public LabelRecord Label;
+
+        public Export( LabelRecord label )
+        {
+            Label = label;
+        }
     }
 
     internal enum SegmentType
