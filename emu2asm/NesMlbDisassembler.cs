@@ -125,54 +125,16 @@ namespace emu2asm.NesMlb
             TraceCode();
             GenerateSaveRamJumpLabels();
 
-            // TODO: Only include definitions that are used in each bank.
-
-            StringBuilder builder = new StringBuilder();
-
-            foreach ( var pair in _labelDb.Ram.ByName )
-            {
-                int address = pair.Value.Address;
-
-                builder.AppendFormat( "{0} := ${1:X2}\n", pair.Key, address );
-            }
-
-            foreach ( var pair in _labelDb.Registers.ByName )
-            {
-                int address = pair.Value.Address;
-
-                builder.AppendFormat( "{0} := ${1:X2}\n", pair.Key, address );
-            }
-
-            builder.AppendLine();
-
-            foreach ( var pair in _labelDb.SaveRam.ByName )
-            {
-                // TODO:
-
-                int address = pair.Value.Address + 0x6000;
-
-                // TODO: hardcoded addresses
-
-                if ( address < 0x67F0 || address >= 0x7F00
-                    || (address >= 0x687E && address < 0x6C90) )
-                {
-                    builder.AppendFormat( "{0} := ${1:X4}\n", pair.Key, address );
-                }
-            }
-
-            builder.AppendLine();
-
-            string definitions = builder.ToString();
-
             foreach ( var bank in _config.Banks )
             {
-                DisassembleBank( bank, definitions );
+                DisassembleBank( bank );
             }
 
+            WriteDefinitionsFile();
             WriteLinkerScript();
         }
 
-        private void DisassembleBank( Bank bankInfo, string definitions )
+        private void DisassembleBank( Bank bankInfo )
         {
             var disasm = new Disasm6502.Disassembler();
             var dataBlock = new DataBlock();
@@ -182,22 +144,16 @@ namespace emu2asm.NesMlb
             string filename = string.Format( "Z_{0}.asm", bankInfo.Id );
 
             using var writer = new StreamWriter( filename, false, System.Text.Encoding.ASCII );
-            int segIx = -1;
+
+            writer.WriteLine( ".INCLUDE \"Variables.inc\"" );
 
             foreach ( var segment in bankInfo.Segments )
             {
-                segIx++;
-
                 FlushDataBlock( dataBlock, writer );
 
                 writer.WriteLine();
                 writer.WriteLine( ".SEGMENT \"{0}\"", segment.Name );
                 writer.WriteLine();
-
-                if ( segIx == 0 )
-                {
-                    writer.WriteLine( definitions );
-                }
 
                 WriteImports( writer, segment );
                 WriteExports( writer, segment );
@@ -1043,6 +999,44 @@ namespace emu2asm.NesMlb
                 {
                     offset++;
                     addr++;
+                }
+            }
+        }
+
+        private void WriteDefinitionsFile()
+        {
+            using var writer = new StreamWriter( "Variables.inc", false, System.Text.Encoding.ASCII );
+
+            foreach ( var pair in _labelDb.Ram.ByName )
+            {
+                int address = pair.Value.Address;
+
+                writer.WriteLine( "{0} := ${1:X2}", pair.Key, address );
+            }
+
+            writer.WriteLine();
+
+            foreach ( var pair in _labelDb.Registers.ByName )
+            {
+                int address = pair.Value.Address;
+
+                writer.WriteLine( "{0} := ${1:X2}", pair.Key, address );
+            }
+
+            writer.WriteLine();
+
+            foreach ( var pair in _labelDb.SaveRam.ByName )
+            {
+                // TODO:
+
+                int address = pair.Value.Address + 0x6000;
+
+                // TODO: hardcoded addresses
+
+                if ( address < 0x67F0 || address >= 0x7F00
+                    || (address >= 0x687E && address < 0x6C90) )
+                {
+                    writer.WriteLine( "{0} := ${1:X4}", pair.Key, address );
                 }
             }
         }
