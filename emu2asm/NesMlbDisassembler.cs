@@ -19,6 +19,7 @@ namespace emu2asm.NesMlb
         private readonly LabelNamespace _nullNamepsace = new();
 
         private List<Segment> _segments = new();
+        private List<Segment> _fixedSegments = new();
 
         public Disassembler(
             Config config,
@@ -35,6 +36,10 @@ namespace emu2asm.NesMlb
             _originCoverage = new int[coverageImage.Length];
 
             MakeSegments();
+
+            _fixedSegments.Add( _config.Banks[1].Segments[1] );
+            _fixedSegments.Add( _config.Banks[6].Segments[1] );
+            _fixedSegments.Add( _config.Banks[7].Segments[0] );
         }
 
         private void MakeSegments()
@@ -152,12 +157,6 @@ namespace emu2asm.NesMlb
                     || (address >= 0x687E && address < 0x6C90) )
                 {
                     builder.AppendFormat( "{0} := ${1:X4}\n", pair.Key, address );
-                }
-                else
-                {
-                    // TODO: IMPORT as needed
-
-                    builder.AppendFormat( ".GLOBAL {0}\n", pair.Key );
                 }
             }
 
@@ -785,6 +784,14 @@ namespace emu2asm.NesMlb
             return address - bankInfo.Address + bankInfo.Offset;
         }
 
+        private int GetOffsetFromAddress( Segment segment, int address )
+        {
+            if ( segment.Type == SegmentType.Program )
+                return address - segment.Parent.Address + segment.Parent.Offset;
+            else
+                return address - segment.Address + segment.Offset;
+        }
+
         private Segment FindSegmentByAddress( Bank bankInfo, int address )
         {
             foreach ( var segment in bankInfo.Segments )
@@ -862,8 +869,7 @@ namespace emu2asm.NesMlb
         private void TraceCallsToFixedBank()
         {
             int bankNumber = -1;
-            int segmentId = -1;
-            Segment sourceSeg = _config.Banks[7].Segments[0];
+            Segment callerSeg;
 
             foreach ( var bankInfo in _config.Banks )
             {
@@ -871,39 +877,51 @@ namespace emu2asm.NesMlb
 
                 foreach ( var segment in bankInfo.Segments )
                 {
-                    if ( segment.Address >= 0xC000 )
-                        continue;
-
                     int endOffset = segment.Offset + segment.Size;
                     int addr = segment.Address;
 
-                    segmentId = segment.Id;
+                    callerSeg = segment;
                     ProcessBankCode( segment.Offset, endOffset, addr, ProcessInstruction );
                 }
             }
 
             void ProcessInstruction( InstDisasm inst, int offset )
             {
-                int targetOffset = inst.Value - 0xC000 + 0x1C000;
+                if ( !IsAbsolute( inst.Mode ) )
+                    return;
 
-                if ( (inst.Class == Class.JMP || inst.Class == Class.JSR)
-                    && inst.Mode == Mode.a
-                    && inst.Value >= 0xC000 )
+                Segment calleeSeg = null;
+
+                foreach ( var segment in _fixedSegments )
                 {
-                    if ( _segments[segmentId].Type == SegmentType.Program )
+                    if ( segment.IsAddressInside( inst.Value ) )
                     {
-                        _tracedCoverage[targetOffset] = (byte) (bankNumber | 0x20);
-                        _originCoverage[targetOffset] = offset;
+                        calleeSeg = segment;
+                        break;
                     }
                 }
 
-                if ( IsAbsolute( inst.Mode ) && inst.Value >= 0xC000
-                    && (sourceSeg.Parent != _segments[segmentId].Parent) )
+                if ( calleeSeg == null || calleeSeg.Id == callerSeg.Id )
+                    return;
+
+                int targetOffset = GetOffsetFromAddress( calleeSeg, inst.Value );
+
+                if ( (inst.Class == Class.JMP || inst.Class == Class.JSR)
+                    && inst.Mode == Mode.a
+                    && callerSeg.Type == SegmentType.Program && callerSeg.Address < 0xC000 )
                 {
-                    if ( _labelDb.Program.ByAddress.TryGetValue( targetOffset, out LabelRecord record ) )
+                    _tracedCoverage[targetOffset] = (byte) (bankNumber | 0x20);
+                    _originCoverage[targetOffset] = offset;
+                }
+
+                if ( calleeSeg.Parent != callerSeg.Parent )
+                {
+                    int nsOffset = calleeSeg.GetNamespaceOffset( targetOffset );
+
+                    if ( calleeSeg.Namespace.ByAddress.TryGetValue( nsOffset, out LabelRecord record ) )
                     {
-                        AddImport( _segments[segmentId], record, sourceSeg );
-                        AddExport( sourceSeg, record );
+                        AddImport( callerSeg, record, source: calleeSeg );
+                        AddExport( calleeSeg, record );
                     }
                 }
             }
@@ -984,13 +1002,13 @@ namespace emu2asm.NesMlb
                         };
 
                         _labelDb.SaveRam.ByAddress.Add( relAddr, record );
+                        _labelDb.SaveRam.ByName.Add( record.Name, record );
                     }
-                    else
+                    else if ( string.IsNullOrEmpty( record.Name ) )
                     {
                         record.Name = labelName;
+                        _labelDb.SaveRam.ByName.Add( record.Name, record );
                     }
-
-                    _labelDb.SaveRam.ByName.Add( record.Name, record );
                 }
             }
         }
