@@ -195,7 +195,7 @@ namespace emu2asm.NesMlb
                         if ( IsZeroPage( inst.Mode ) || inst.Mode == Mode.r
                             || (IsAbsolute( inst.Mode ) && !WritesToRom( inst )) )
                         {
-                            record = FindAbsoluteAddress( segment, inst, romOffset );
+                            record = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
 
                             if ( record != null && !string.IsNullOrEmpty( record.Name ) )
                                 memoryName = record.Name;
@@ -214,22 +214,52 @@ namespace emu2asm.NesMlb
                     }
                     else
                     {
-                        if ( dataBlock.Known != ((c & 0x22) != 0) )
+                        if ( record != null && record.Length > 1
+                            && (_tracedCoverage[romOffset] & 0x40) != 0 )
                         {
                             FlushDataBlock( dataBlock, writer );
+                            WriteAddressTable( segment, romOffset, record, writer );
+                            romOffset += record.Length - 1;
                         }
-
-                        if ( dataBlock.Size == 0 )
+                        else
                         {
-                            dataBlock.Offset = romOffset;
-                            dataBlock.Known = (c & 0x22) != 0;
-                        }
+                            if ( dataBlock.Known != ((c & 0x22) != 0) )
+                            {
+                                FlushDataBlock( dataBlock, writer );
+                            }
 
-                        dataBlock.Size++;
+                            if ( dataBlock.Size == 0 )
+                            {
+                                dataBlock.Offset = romOffset;
+                                dataBlock.Known = (c & 0x22) != 0;
+                            }
+
+                            dataBlock.Size++;
+                        }
                     }
                 }
 
                 FlushDataBlock( dataBlock, writer );
+            }
+        }
+
+        private void WriteAddressTable( Segment segment, int offset, LabelRecord label, StreamWriter writer )
+        {
+            byte[] image = _rom.Image;
+
+            for ( int i = 0; i < label.Length; i += 2, offset += 2 )
+            {
+                ushort addr = (ushort) (image[offset] | (image[offset + 1] << 8));
+
+                var operandLabel = FindAbsoluteAddressLabel( segment, addr, offset );
+                string sOperand;
+
+                if ( operandLabel != null && !string.IsNullOrEmpty( operandLabel.Name ) )
+                    sOperand = operandLabel.Name;
+                else
+                    sOperand = string.Format( "${0:X4}", addr );
+
+                writer.WriteLine( "    .WORD {0}", sOperand );
             }
         }
 
@@ -310,32 +340,32 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private LabelRecord FindAbsoluteAddress( Segment segment, InstDisasm inst, int instOffset )
+        private LabelRecord FindAbsoluteAddressLabel( Segment segment, ushort addr, int instOffset )
         {
             LabelRecord record;
             LabelNamespace labelNamespace;
             int absOffset;
 
-            if ( inst.Value < 0x2000 )
+            if ( addr < 0x2000 )
             {
-                absOffset = inst.Value;
+                absOffset = addr;
                 labelNamespace = _labelDb.Ram;
             }
-            else if ( inst.Value < 0x6000 )
+            else if ( addr < 0x6000 )
             {
-                absOffset = inst.Value;
+                absOffset = addr;
                 labelNamespace = _labelDb.Registers;
             }
-            else if ( inst.Value < 0x8000 )
+            else if ( addr < 0x8000 )
             {
-                absOffset = (inst.Value - 0x6000);
+                absOffset = (addr - 0x6000);
                 labelNamespace = _labelDb.SaveRam;
             }
-            else if ( inst.Value < 0xC000 )
+            else if ( addr < 0xC000 )
             {
                 if ( segment.Type == SegmentType.Program && segment.Parent.Address == 0x8000 )
                 {
-                    absOffset = (inst.Value - 0x8000) + segment.Parent.Offset;
+                    absOffset = (addr - 0x8000) + segment.Parent.Offset;
                     labelNamespace = _labelDb.Program;
                 }
                 else
@@ -344,7 +374,7 @@ namespace emu2asm.NesMlb
                     {
                         int bank = _tracedCoverage[instOffset] & 0x0F;
 
-                        absOffset = (inst.Value - 0x8000) + _config.Banks[bank].Offset;
+                        absOffset = (addr - 0x8000) + _config.Banks[bank].Offset;
                         labelNamespace = _labelDb.Program;
                     }
                     else
@@ -356,7 +386,7 @@ namespace emu2asm.NesMlb
             }
             else
             {
-                absOffset = (inst.Value - 0xC000) + 0x1C000;
+                absOffset = (addr - 0xC000) + 0x1C000;
                 labelNamespace = _labelDb.Program;
             }
 
@@ -575,6 +605,8 @@ namespace emu2asm.NesMlb
                                     && _labelDb.Program.ByAddress.TryGetValue( tableOffset, out record ) )
                                 {
                                     // TODO: Validate the table length
+                                    if ( (record.Length % 2) != 0 )
+                                        throw new ApplicationException();
 
                                     for ( int i = 0; i < record.Length; i += 2 )
                                     {
@@ -588,7 +620,12 @@ namespace emu2asm.NesMlb
                                             int branchOffset = addrEntry - bankInfo.Address + bankInfo.Offset;
                                             branches.Enqueue( new BranchInfo( branchOffset, mappedBank, originOffset ) );
                                         }
+
+                                        _tracedCoverage[o + 0] = (byte) (mappedBank | TracedBankKnownFlag);
+                                        _tracedCoverage[o + 1] = (byte) (mappedBank | TracedBankKnownFlag);
                                     }
+
+                                    _tracedCoverage[tableOffset] |= 0x40;
 
                                     if ( !firstIter )
                                         break;
@@ -678,6 +715,7 @@ namespace emu2asm.NesMlb
 
                     curSegment = segment;
                     ProcessBankCode( segment.Offset, endOffset, addr, ProcessInstruction );
+                    ProcessSwitchableData( segment );
                 }
             }
 
@@ -704,6 +742,46 @@ namespace emu2asm.NesMlb
                                 AddExport( sourceSeg, record );
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        void ProcessSwitchableData( Segment segment )
+        {
+            int endOffset = segment.Offset + segment.Size;
+            byte[] image = _rom.Image;
+
+            for ( int offset = segment.Offset; offset < endOffset; offset++ )
+            {
+                if ( (_tracedCoverage[offset] & 0x40) != 0 )
+                {
+                    int nsOffset = segment.GetNamespaceOffset( offset );
+                    int bank = _tracedCoverage[offset] & 0x0F;
+                    Bank bankInfo = _config.Banks[bank];
+
+                    if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out var tableLabel )
+                        && tableLabel.Length >= 2 )
+                    {
+                        for ( int i = 0; i < tableLabel.Length; i += 2, offset += 2 )
+                        {
+                            ushort addr = (ushort) (image[offset] | (image[offset + 1] << 8));
+
+                            if ( addr >= 0x8000 && addr < 0xC000 )
+                            {
+                                var entryLabel = FindAbsoluteAddressLabel( segment, addr, offset );
+
+                                if ( entryLabel != null && !string.IsNullOrEmpty( entryLabel.Name ) )
+                                {
+                                    Segment calleeSeg = FindSegmentByAddress( bankInfo, addr );
+
+                                    AddImport( segment, entryLabel, calleeSeg );
+                                    AddExport( calleeSeg, entryLabel );
+                                }
+                            }
+                        }
+
+                        offset--;
                     }
                 }
             }
