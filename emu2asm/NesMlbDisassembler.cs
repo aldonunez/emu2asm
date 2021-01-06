@@ -261,6 +261,8 @@ namespace emu2asm.NesMlb
 
                 writer.WriteLine( "    .WORD {0}", sOperand );
             }
+
+            writer.WriteLine();
         }
 
         private static void WriteExports( StreamWriter writer, Segment segment )
@@ -926,6 +928,48 @@ namespace emu2asm.NesMlb
 
                 Segment calleeSeg = null;
 
+                if ( inst.Class == Class.JSR && inst.Value == 0xE5E2
+                    && callerSeg.Type == SegmentType.Program && callerSeg.Address < 0xC000 )
+                {
+                    int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
+
+                    int tableOffset = offset + instLen;
+                    LabelRecord tableLabel;
+
+                    if ( _labelDb.Program.ByAddress.TryGetValue( tableOffset, out tableLabel ) )
+                    {
+                        // TODO: Validate the table length
+                        if ( (tableLabel.Length % 2) != 0 )
+                            throw new ApplicationException();
+
+                        for ( int i = 0; i < tableLabel.Length; i += 2 )
+                        {
+                            int o = tableOffset + i;
+                            ushort entryAddr = (ushort) (_rom.Image[o] | (_rom.Image[o + 1] << 8));
+
+                            if ( !callerSeg.IsAddressInside( entryAddr ) )
+                            {
+                                calleeSeg = FindFixedSegmentByAddress( entryAddr );
+
+                                if ( calleeSeg.Parent != callerSeg.Parent )
+                                {
+                                    int target = GetOffsetFromAddress( calleeSeg, entryAddr );
+
+                                    int nsOffset = calleeSeg.GetNamespaceOffset( target );
+
+                                    if ( calleeSeg.Namespace.ByAddress.TryGetValue( nsOffset, out var record ) )
+                                    {
+                                        AddImport( callerSeg, record, source: calleeSeg );
+                                        AddExport( calleeSeg, record );
+                                    }
+                                }
+                            }
+                        }
+
+                        _tracedCoverage[tableOffset] |= 0x40;
+                    }
+                }
+
                 foreach ( var segment in _fixedSegments )
                 {
                     if ( segment.IsAddressInside( inst.Value ) )
@@ -959,6 +1003,17 @@ namespace emu2asm.NesMlb
                     }
                 }
             }
+        }
+
+        private Segment FindFixedSegmentByAddress( int address )
+        {
+            foreach ( var segment in _fixedSegments )
+            {
+                if ( segment.IsAddressInside( address ) )
+                    return segment;
+            }
+
+            return null;
         }
 
         private void MarkSaveRamCodeCoverage()
