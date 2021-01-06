@@ -2,12 +2,11 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Text;
 using Disasm6502;
 
 namespace emu2asm.NesMlb
 {
-    class Disassembler
+    partial class Disassembler
     {
         private Config _config;
         private Rom _rom;
@@ -120,6 +119,7 @@ namespace emu2asm.NesMlb
 
         public void Disassemble()
         {
+            TraceLabels();
             ClearUnusedCoverageBit();
             MarkSaveRamCodeCoverage();
             TraceCode();
@@ -165,17 +165,29 @@ namespace emu2asm.NesMlb
 
                 for ( int romOffset = segment.Offset; romOffset < endOffset; romOffset++ )
                 {
+                    LabelRecord subjLabel;
+                    object attribute = null;
+
                     ushort pc = (ushort) segment.GetAddress( romOffset );
 
                     int nsOffset = segment.GetNamespaceOffset( romOffset );
 
-                    if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out var record ) )
+                    if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out subjLabel ) )
                     {
-                        if ( !string.IsNullOrEmpty( record.Name ) )
+                        var commentParts = new CommentParts();
+
+                        if ( !string.IsNullOrEmpty( subjLabel.Comment ) )
+                        {
+                            var commentParser = new CommentParser( subjLabel.Comment );
+                            commentParts = commentParser.ParseAll();
+                            attribute = commentParts.Attribute;
+                        }
+
+                        if ( !string.IsNullOrEmpty( subjLabel.Name ) )
                         {
                             FlushDataBlock( dataBlock, writer );
 
-                            writer.WriteLine( "{0}:", record.Name );
+                            writer.WriteLine( "{0}:", subjLabel.Name );
                         }
 
                         // TODO: comments
@@ -198,10 +210,10 @@ namespace emu2asm.NesMlb
                         if ( IsZeroPage( inst.Mode ) || inst.Mode == Mode.r
                             || (IsAbsolute( inst.Mode ) && !WritesToRom( inst )) )
                         {
-                            record = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
+                            var operand = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
 
-                            if ( record != null && !string.IsNullOrEmpty( record.Name ) )
-                                memoryName = record.Name;
+                            if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
+                                memoryName = operand.Name;
                         }
 
                         writer.Write( "    " );
@@ -217,12 +229,32 @@ namespace emu2asm.NesMlb
                     }
                     else
                     {
-                        if ( record != null && record.Length > 1
+                        if ( subjLabel != null && subjLabel.Length > 1
                             && (_tracedCoverage[romOffset] & 0x40) != 0 )
                         {
                             FlushDataBlock( dataBlock, writer );
-                            WriteAddressTable( segment, romOffset, record, writer );
-                            romOffset += record.Length - 1;
+                            WriteAddressTable( segment, romOffset, subjLabel, writer );
+                            romOffset += subjLabel.Length - 1;
+                        }
+                        else if ( attribute != null )
+                        {
+                            FlushDataBlock( dataBlock, writer );
+
+                            var dataAttr = attribute as DataAttribute;
+                            if ( dataAttr == null )
+                                throw new ApplicationException();
+
+                            if ( !dataAttr.WriteBlock( this, segment, romOffset, subjLabel, writer ) )
+                                WriteDataBlock( romOffset, subjLabel.Length, writer );
+
+                            romOffset += subjLabel.Length - 1;
+                        }
+                        // TODO: make this optional
+                        else if ( subjLabel != null && subjLabel.Length > 1 )
+                        {
+                            FlushDataBlock( dataBlock, writer );
+                            WriteDataBlock( romOffset, subjLabel.Length, writer );
+                            romOffset += subjLabel.Length - 1;
                         }
                         else
                         {
@@ -768,7 +800,7 @@ namespace emu2asm.NesMlb
 
             for ( int offset = segment.Offset; offset < endOffset; offset++ )
             {
-                if ( (_tracedCoverage[offset] & 0x40) != 0 )
+                if ( (_coverage[offset] & 0x11) == 0 && (_tracedCoverage[offset] & 0x40) != 0 )
                 {
                     int nsOffset = segment.GetNamespaceOffset( offset );
                     int bank = _tracedCoverage[offset] & 0x0F;
@@ -1144,6 +1176,47 @@ namespace emu2asm.NesMlb
                 {
                     offset++;
                     addr++;
+                }
+            }
+        }
+
+        private void TraceLabels()
+        {
+            foreach ( var bankInfo in _config.Banks )
+            {
+                foreach ( var segment in bankInfo.Segments )
+                {
+                    int endOffset = segment.Offset + segment.Size;
+                    int nsOffset = segment.GetNamespaceOffset( segment.Offset );
+
+                    for ( int offset = segment.Offset; offset < endOffset; )
+                    {
+                        int size = 1;
+
+                        if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out var label )
+                            && !string.IsNullOrEmpty( label.Comment ) )
+                        {
+                            var parser = new CommentParser( label.Comment );
+                            var attribute = parser.ParseAttribute();
+
+                            if ( attribute != null )
+                            {
+                                var dataAttr = attribute as DataAttribute;
+
+                                if ( dataAttr != null )
+                                {
+                                    if ( (_coverage[offset] & 0x11) != 0 )
+                                        throw new Exception( "Data attribute was applied to code." );
+
+                                    dataAttr.ProcessBlock( this, segment, offset, label );
+                                    size = label.Length;
+                                }
+                            }
+                        }
+
+                        offset += size;
+                        nsOffset += size;
+                    }
                 }
             }
         }
