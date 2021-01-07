@@ -151,6 +151,9 @@ namespace emu2asm.NesMlb
             {
                 FlushDataBlock( dataBlock, writer );
 
+                if ( segment.Type == SegmentType.SaveRam )
+                    WriteRamSegmentLabel( segment, writer );
+
                 writer.WriteLine();
                 writer.WriteLine( ".SEGMENT \"{0}\"", segment.Name );
                 writer.WriteLine();
@@ -240,6 +243,15 @@ namespace emu2asm.NesMlb
                 }
 
                 FlushDataBlock( dataBlock, writer );
+            }
+        }
+
+        private void WriteRamSegmentLabel( Segment segment, StreamWriter writer )
+        {
+            if ( _labelDb.Program.ByAddress.TryGetValue( segment.Offset, out var record )
+                && !string.IsNullOrEmpty( record.Name ) )
+            {
+                writer.WriteLine( "{0}:", record.Name );
             }
         }
 
