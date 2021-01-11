@@ -30,26 +30,38 @@ namespace emu2asm.NesMlb
         }
     }
 
-    internal enum SegmentType
+    public enum SegmentType
     {
         Program,
         SaveRam,
     }
 
-    internal record Segment
+    public enum MemoryUse
+    {
+        Mixed,
+        Code,
+        Data,
+    }
+
+    public class Segment : IXmlSerializable
     {
         public SegmentType Type;
+        public MemoryUse MemoryUse;
+
         public Bank Parent;
         public int Id;
         public string Name;
+
+        public string Tag;
         public int Offset;
         public int Address;
         public int Size;
-        public int NamespaceBase;
-        public LabelNamespace Namespace;
 
-        public readonly Dictionary<int, Import> Imports = new();
-        public readonly Dictionary<int, Export> Exports = new();
+        public int NamespaceBase;
+        internal LabelNamespace Namespace;
+
+        internal readonly Dictionary<int, Import> Imports = new();
+        internal readonly Dictionary<int, Export> Exports = new();
 
         public bool IsAddressInside( int address )
         {
@@ -65,6 +77,50 @@ namespace emu2asm.NesMlb
         {
             return offset - NamespaceBase;
         }
+
+        public XmlSchema GetSchema() => null;
+
+        public void ReadXml( XmlReader reader )
+        {
+            if ( !reader.MoveToFirstAttribute() )
+                throw new Exception();
+
+            do
+            {
+                switch ( reader.Name )
+                {
+                    case "Tag":
+                        Tag = reader.Value;
+                        break;
+
+                    case "Type":
+                        Type = Enum.Parse<SegmentType>( reader.Value );
+                        break;
+
+                    case "Use":
+                        MemoryUse = Enum.Parse<MemoryUse>( reader.Value );
+                        break;
+
+                    case "Offset":
+                        Offset = int.Parse( reader.Value, NumberStyles.HexNumber );
+                        break;
+
+                    case "Address":
+                        Address = int.Parse( reader.Value, NumberStyles.HexNumber );
+                        break;
+
+                    case "Size":
+                        Size = int.Parse( reader.Value, NumberStyles.HexNumber );
+                        break;
+                }
+            }
+            while ( reader.MoveToNextAttribute() );
+
+            reader.MoveToElement();
+            reader.Skip();
+        }
+
+        public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
     }
 
     public class Bank : IXmlSerializable
@@ -73,7 +129,6 @@ namespace emu2asm.NesMlb
         public int Offset;
         public int Address;
         public int Size;
-        public RomToRamMapping RomToRam;
         internal readonly List<Segment> Segments = new();
 
         public XmlSchema GetSchema() => null;
@@ -109,39 +164,20 @@ namespace emu2asm.NesMlb
                         Size = int.Parse( content, NumberStyles.HexNumber );
                         break;
 
-                    case "RomToRam":
-                    {
-                        var romToRam = new RomToRamMapping();
-                        romToRam.ReadXml( reader );
-                        RomToRam = romToRam;
+                    case "Segments":
+                        ReadSegments( reader );
                         break;
-                    }
+
+                    default:
+                        reader.Skip();
+                        break;
                 }
             }
 
             reader.ReadEndElement();
         }
 
-        public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
-    }
-
-    public enum MemoryUse
-    {
-        Mixed,
-        Code,
-        Data,
-    }
-
-    public class RomToRamMapping : IXmlSerializable
-    {
-        public int RomAddress;
-        public int RamAddress;
-        public int Size;
-        public MemoryUse Type;
-
-        public XmlSchema GetSchema() => null;
-
-        public void ReadXml( XmlReader reader )
+        private void ReadSegments( XmlReader reader )
         {
             if ( reader.IsEmptyElement )
                 return;
@@ -150,26 +186,16 @@ namespace emu2asm.NesMlb
 
             while ( reader.NodeType != XmlNodeType.EndElement )
             {
-                string name = reader.Name;
-                string content = reader.ReadElementContentAsString();
-
-                switch ( name )
+                if ( reader.Name == "Segment" )
                 {
-                    case "RamAddress":
-                        RamAddress = int.Parse( content, NumberStyles.HexNumber );
-                        break;
-
-                    case "RomAddress":
-                        RomAddress = int.Parse( content, NumberStyles.HexNumber );
-                        break;
-
-                    case "Size":
-                        Size = int.Parse( content, NumberStyles.HexNumber );
-                        break;
-
-                    case "Type":
-                        Type = Enum.Parse<MemoryUse>( content, true );
-                        break;
+                    var segment = new Segment();
+                    segment.ReadXml( reader );
+                    segment.Parent = this;
+                    Segments.Add( segment );
+                }
+                else
+                {
+                    reader.Skip();
                 }
             }
 

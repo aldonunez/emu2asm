@@ -39,80 +39,39 @@ namespace emu2asm.NesMlb
             _fixedSegments.Add( _config.Banks[1].Segments[1] );
             _fixedSegments.Add( _config.Banks[6].Segments[1] );
             _fixedSegments.Add( _config.Banks[7].Segments[0] );
+            _fixedSegments.Add( _config.Banks[7].Segments[1] );
+            _fixedSegments.Add( _config.Banks[7].Segments[2] );
         }
 
         private void MakeSegments()
         {
             foreach ( var bankInfo in _config.Banks )
             {
-                var romToRam = bankInfo.RomToRam;
-                int externalOffset = 0;
-
                 string baseName = "BANK_" + bankInfo.Id;
-                int baseSize;
+                int i = 0;
 
-                if ( bankInfo.RomToRam == null || romToRam.Size == 0 )
+                foreach ( var segment in bankInfo.Segments )
                 {
-                    baseSize = bankInfo.Size;
-                }
-                else
-                {
-                    externalOffset = (romToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
-                    baseSize = externalOffset - bankInfo.Offset;
-                }
-
-                if ( baseSize > 0 )
-                {
-                    var segment = new Segment
+                    if ( segment.Type == SegmentType.Program )
                     {
-                        Type = SegmentType.Program,
-                        Parent = bankInfo,
-                        Id = _segments.Count,
-                        Name = baseName,
-                        Address = bankInfo.Address,
-                        Offset = bankInfo.Offset,
-                        Size = baseSize,
-                        Namespace = _labelDb.Program,
-                        NamespaceBase = 0
-                    };
+                        segment.Namespace = _labelDb.Program;
+                        // Leave NamespaceBase = 0.
+                    }
+                    else if ( segment.Type == SegmentType.SaveRam )
+                    {
+                        segment.Namespace = _labelDb.SaveRam;
+                        segment.NamespaceBase = segment.Offset + 0x6000 - segment.Address;
+                    }
 
-                    bankInfo.Segments.Add( segment );
+                    segment.Id = _segments.Count;
+
+                    if ( string.IsNullOrEmpty( segment.Tag ) )
+                        segment.Tag = i.ToString( "X2" );
+
+                    segment.Name = string.Format( "BANK_{0}_{1}", bankInfo.Id, segment.Tag );
+
                     _segments.Add( segment );
-                }
-
-                if ( romToRam != null && romToRam.Size > 0 )
-                {
-                    var extSegment = new Segment
-                    {
-                        Type = SegmentType.SaveRam,
-                        Parent = bankInfo,
-                        Id = _segments.Count,
-                        Name = baseName + "_RAM",
-                        Address = romToRam.RamAddress,
-                        Offset = externalOffset,
-                        Size = romToRam.Size,
-                        Namespace = _labelDb.SaveRam,
-                        NamespaceBase = externalOffset + 0x6000 - romToRam.RamAddress
-                    };
-
-                    bankInfo.Segments.Add( extSegment );
-                    _segments.Add( extSegment );
-
-                    var contSegment = new Segment
-                    {
-                        Type = SegmentType.Program,
-                        Parent = bankInfo,
-                        Id = _segments.Count,
-                        Name = baseName + "_CONT",
-                        Address = romToRam.RomAddress + romToRam.Size,
-                        Offset = externalOffset + romToRam.Size,
-                        Size = bankInfo.Size - baseSize - romToRam.Size,
-                        Namespace = _labelDb.Program,
-                        NamespaceBase = 0
-                    };
-
-                    bankInfo.Segments.Add( contSegment );
-                    _segments.Add( contSegment );
+                    i++;
                 }
             }
         }
@@ -1064,28 +1023,27 @@ namespace emu2asm.NesMlb
         {
             // Mark the code bytes that are copied to Save RAM.
 
-            foreach ( var bankInfo in _config.Banks )
+            foreach ( var segment in _segments )
             {
-                if ( bankInfo.RomToRam == null )
+                if ( segment.Type != SegmentType.SaveRam )
                     continue;
 
-                var romToRam = bankInfo.RomToRam;
-                int startOffset = (bankInfo.RomToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
-                int endOffset = startOffset + bankInfo.RomToRam.Size;
-                int endRamAddr = romToRam.RamAddress + romToRam.Size;
+                int startOffset = segment.Offset;
+                int endOffset = segment.Offset + segment.Size;
+                int endRamAddr = segment.Address + segment.Size;
 
-                Array.Fill<byte>( _coverage, 0x10, startOffset, bankInfo.RomToRam.Size );
+                Array.Fill<byte>( _coverage, 0x10, startOffset, segment.Size );
 
                 foreach ( var record in _labelDb.SaveRam.ByName.Values )
                 {
                     int address = record.Address + 0x6000;
 
-                    if ( address < romToRam.RamAddress
+                    if ( address < segment.Address
                         || address >= endRamAddr
                         || record.Length <= 1 )
                         continue;
 
-                    int offset = (address - romToRam.RamAddress) + startOffset;
+                    int offset = (address - segment.Address) + startOffset;
 
                     Array.Fill<byte>( _coverage, 0x02, offset, record.Length );
                 }
@@ -1096,18 +1054,17 @@ namespace emu2asm.NesMlb
         {
             // Generate labels for jumps in code copied to Save RAM.
 
-            foreach ( var bankInfo in _config.Banks )
+            foreach ( var segment in _segments )
             {
-                if ( bankInfo.RomToRam == null )
+                if ( segment.Type != SegmentType.SaveRam )
                     continue;
 
-                var romToRam = bankInfo.RomToRam;
-                int startOffset = (bankInfo.RomToRam.RomAddress - bankInfo.Address) + bankInfo.Offset;
-                int endOffset = startOffset + bankInfo.RomToRam.Size;
-                int addr = romToRam.RamAddress;
+                int startOffset = segment.Offset;
+                int endOffset = startOffset + segment.Size;
+                int addr = segment.Address;
 
-                if ( bankInfo.RomToRam.Type == MemoryUse.Data )
-                    Array.Fill<byte>( _coverage, 0x02, startOffset, romToRam.Size );
+                if ( segment.MemoryUse == MemoryUse.Data )
+                    Array.Fill<byte>( _coverage, 0x02, startOffset, segment.Size );
                 else
                     ProcessBankCode( startOffset, endOffset, addr, ProcessInstruction );
             }
@@ -1267,38 +1224,46 @@ namespace emu2asm.NesMlb
             foreach ( var bankInfo in _config.Banks )
             {
                 writer.WriteLine(
-                    "    MEM_{0}: start = ${1:X4}, size = ${2:X4}, file = \"bank_{0}.bin\", fill = yes, fillval = $00 ;",
+                    "    ROM_{0}: start = ${1:X4}, size = ${2:X4}, file = \"bank_{0}.bin\", fill = yes, fillval = $FF ;",
                     bankInfo.Id,
                     bankInfo.Address,
                     bankInfo.Size );
 
-                if ( bankInfo.RomToRam != null )
+                foreach ( var segment in bankInfo.Segments )
                 {
-                    writer.WriteLine(
-                        "    MEM_{0}_RAM: start = ${1:X4}, size = ${2:X4}, file = \"\", fill = yes, fillval = $00 ;",
-                        bankInfo.Id,
-                        bankInfo.RomToRam.RamAddress,
-                        bankInfo.RomToRam.Size );
+                    if ( segment.Type == SegmentType.SaveRam )
+                    {
+                        writer.WriteLine(
+                            "    RAM_{0}_{3}: start = ${1:X4}, size = ${2:X4}, file = \"\", fill = yes, fillval = $FF ;",
+                            bankInfo.Id,
+                            segment.Address,
+                            segment.Size,
+                            segment.Tag );
+                    }
                 }
             }
             writer.WriteLine( "}\n" );
 
             writer.WriteLine( "SEGMENTS\n{" );
-            foreach ( var bankInfo in _config.Banks )
+            foreach ( var segment in _segments )
             {
-                writer.WriteLine(
-                    "    BANK_{0}: load = MEM_{0}, type = ro, align = $4000 ;",
-                    bankInfo.Id );
-
-                if ( bankInfo.RomToRam != null )
+                if ( segment.Type == SegmentType.Program )
+                {
+                    writer.Write(
+                        "    {0}: load = ROM_{1}, type = ro",
+                        segment.Name,
+                        segment.Parent.Id );
+                    if ( segment.Address != segment.Parent.Address )
+                        writer.Write( ", start = ${0:X4}", segment.Address );
+                    writer.WriteLine( " ;" );
+                }
+                else if ( segment.Type == SegmentType.SaveRam )
                 {
                     writer.WriteLine(
-                        "    BANK_{0}_RAM: load = MEM_{0}, type = ro, run = MEM_{0}_RAM, define = yes ;",
-                        bankInfo.Id );
-
-                    writer.WriteLine(
-                        "    BANK_{0}_CONT: load = MEM_{0}, type = ro ;",
-                        bankInfo.Id );
+                        "    {0}: load = ROM_{1}, type = ro, run = RAM_{1}_{2}, define = yes ;",
+                        segment.Name,
+                        segment.Parent.Id,
+                        segment.Tag );
                 }
             }
             writer.WriteLine( "}" );
