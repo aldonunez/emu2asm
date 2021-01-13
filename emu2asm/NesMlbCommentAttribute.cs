@@ -287,5 +287,16 @@ namespace emu2asm.NesMlb
                 return true;
             }
         }
+
+
+        internal class ExprCodeAttribute
+        {
+            public string Expression { get; }
+
+            public ExprCodeAttribute( string def, int attrEnd, int lineEnd )
+            {
+                Expression = def.Substring( attrEnd, lineEnd - attrEnd ).Trim();
+            }
+        }
     }
 }

@@ -169,10 +169,17 @@ namespace emu2asm.NesMlb
                         if ( IsZeroPage( inst.Mode ) || inst.Mode == Mode.r
                             || (IsAbsolute( inst.Mode ) && !WritesToRom( inst )) )
                         {
-                            var operand = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
+                            if ( attribute is ExprCodeAttribute exprAttr )
+                            {
+                                memoryName = exprAttr.Expression;
+                            }
+                            else
+                            {
+                                var operand = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
 
-                            if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
-                                memoryName = operand.Name;
+                                if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
+                                    memoryName = operand.Name;
+                            }
                         }
 
                         writer.Write( "    " );

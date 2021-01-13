@@ -200,7 +200,7 @@ namespace emu2asm.NesMlb
             }
             else if ( subattrSpan.Equals( "EXPR", StringComparison.Ordinal ) )
             {
-                return;
+                attribute = new Disassembler.ExprCodeAttribute( _comment, attrEnd, lineEnd );
             }
             else
             {
