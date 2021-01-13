@@ -81,8 +81,8 @@ namespace emu2asm.NesMlb
             TraceLabels();
             ClearUnusedCoverageBit();
             MarkSaveRamCodeCoverage();
-            TraceCode();
             GenerateSaveRamJumpLabels();
+            TraceCode();
 
             foreach ( var bank in _config.Banks )
             {
