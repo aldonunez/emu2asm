@@ -9,7 +9,9 @@ namespace emu2asm.NesMlb
             string configPath,
             string romPath,
             string coveragePath,
-            string labelPath )
+            string labelPath,
+            bool separateUnknown,
+            bool enableComments )
         {
             var config = ReadConfig( configPath );
             var romImage = ReadRomImage( romPath );
@@ -21,6 +23,9 @@ namespace emu2asm.NesMlb
                 romImage,
                 coverage,
                 labelDb );
+
+            disassembler.SeparateUnknown = separateUnknown;
+            disassembler.EnableComments = enableComments;
 
             disassembler.Disassemble();
         }

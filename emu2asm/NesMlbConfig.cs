@@ -236,11 +236,17 @@ namespace emu2asm.NesMlb
         public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
     }
 
+    public class CommentConfig
+    {
+        public string ProcPattern;
+    }
+
     [XmlRoot( ElementName = "Emu2asm-nesmlb-config" )]
     public class Config
     {
         public List<Bank> Banks;
         public LabelMap Labels;
+        public CommentConfig Comments;
 
         public static Config Make( TextReader textReader )
         {

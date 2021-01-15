@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text.RegularExpressions;
 using Disasm6502;
 
 namespace emu2asm.NesMlb
@@ -19,6 +20,11 @@ namespace emu2asm.NesMlb
 
         private List<Segment> _segments = new();
         private List<Segment> _fixedSegments = new();
+
+        private Regex _procPatternRegex;
+
+        public bool SeparateUnknown { get; set; }
+        public bool EnableComments { get; set; }
 
         public Disassembler(
             Config config,
@@ -41,6 +47,16 @@ namespace emu2asm.NesMlb
             _fixedSegments.Add( _config.Banks[7].Segments[0] );
             _fixedSegments.Add( _config.Banks[7].Segments[1] );
             _fixedSegments.Add( _config.Banks[7].Segments[2] );
+
+            MakeProcPatternRegex();
+        }
+
+        private void MakeProcPatternRegex()
+        {
+            if ( _config.Comments != null && !string.IsNullOrEmpty( _config.Comments.ProcPattern ) )
+            {
+                _procPatternRegex = new Regex( _config.Comments.ProcPattern );
+            }
         }
 
         private void MakeSegments()
@@ -126,6 +142,7 @@ namespace emu2asm.NesMlb
                 {
                     LabelRecord subjLabel;
                     object attribute = null;
+                    string sideComment = null;
 
                     ushort pc = (ushort) segment.GetAddress( romOffset );
 
@@ -134,22 +151,44 @@ namespace emu2asm.NesMlb
                     if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out subjLabel ) )
                     {
                         var commentParts = new CommentParts();
+                        bool looksLikeProc = false;
 
                         if ( !string.IsNullOrEmpty( subjLabel.Comment ) )
                         {
                             var commentParser = new CommentParser( subjLabel.Comment );
                             commentParts = commentParser.ParseAll();
+                            TurnAboveIntoSideComment( ref commentParts );
                             attribute = commentParts.Attribute;
+                            sideComment = commentParts.Side;
+                            looksLikeProc = CommentMatchesProcPattern( commentParts.Above );
+                        }
+
+                        if ( EnableComments && looksLikeProc && !string.IsNullOrEmpty( commentParts.Above ) )
+                        {
+                            FlushDataBlock( dataBlock, writer );
+                            WriteProcCommentBlock( commentParts.Above, writer );
                         }
 
                         if ( !string.IsNullOrEmpty( subjLabel.Name ) )
                         {
                             FlushDataBlock( dataBlock, writer );
-
                             writer.WriteLine( "{0}:", subjLabel.Name );
                         }
 
-                        // TODO: comments
+                        if ( EnableComments )
+                        {
+                            if ( !looksLikeProc && !string.IsNullOrEmpty( commentParts.Above ) )
+                            {
+                                FlushDataBlock( dataBlock, writer );
+                                WriteCommentBlock( commentParts.Above, "    ", writer );
+                            }
+
+                            if ( !string.IsNullOrEmpty( commentParts.Below ) )
+                            {
+                                FlushDataBlock( dataBlock, writer );
+                                WriteCommentBlock( commentParts.Below, "    ", writer );
+                            }
+                        }
                     }
 
                     byte c = _coverage[romOffset];
@@ -182,8 +221,11 @@ namespace emu2asm.NesMlb
                             }
                         }
 
+                        writer.Flush();
+                        long lineStartPos = writer.BaseStream.Position;
                         writer.Write( "    " );
                         disasm.Format( inst, memoryName, writer );
+                        WriteSideComment( writer, sideComment, lineStartPos );
                         writer.WriteLine();
 
                         if ( inst.Class == Class.JMP
@@ -195,6 +237,12 @@ namespace emu2asm.NesMlb
                     }
                     else
                     {
+                        if ( !string.IsNullOrEmpty( sideComment ) )
+                        {
+                            FlushDataBlock( dataBlock, writer );
+                            WriteCommentBlock( sideComment, "", writer );
+                        }
+
                         if ( subjLabel != null && subjLabel.Length > 1
                             && (_tracedCoverage[romOffset] & 0x40) != 0 )
                         {
@@ -215,8 +263,7 @@ namespace emu2asm.NesMlb
 
                             romOffset += subjLabel.Length - 1;
                         }
-                        // TODO: make this optional
-                        else if ( subjLabel != null && subjLabel.Length > 1 )
+                        else if ( subjLabel != null && subjLabel.Length > 1 && !SeparateUnknown )
                         {
                             FlushDataBlock( dataBlock, writer );
                             WriteDataBlock( romOffset, subjLabel.Length, writer );
@@ -242,6 +289,63 @@ namespace emu2asm.NesMlb
 
                 FlushDataBlock( dataBlock, writer );
             }
+        }
+
+        private void TurnAboveIntoSideComment( ref CommentParts parts )
+        {
+            // Turn a single-line upper section into a side section.
+
+            if ( parts.Side == null && parts.Above != null && !parts.Above.Contains( "\\n" ) )
+            {
+                parts.Side = parts.Above;
+                parts.Above = null;
+            }
+        }
+
+        private void WriteSideComment( StreamWriter writer, string comment, long linePos )
+        {
+            if ( string.IsNullOrEmpty( comment ) )
+                return;
+
+            writer.Flush();
+
+            int lineLength = (int) (writer.BaseStream.Position - linePos);
+            int pad;
+
+            if ( lineLength < 32 )
+                pad = 32 - lineLength;
+            else
+                pad = 4;
+
+            for ( int i = 0; i < pad; i++ )
+            {
+                writer.Write( ' ' );
+            }
+
+            writer.Write( ';' );
+            writer.Write( comment );
+        }
+
+        private static void WriteCommentBlock( string comment, string indent, StreamWriter writer )
+        {
+            string[] lines = comment.Split( "\\n" );
+
+            foreach ( var line in lines )
+            {
+                writer.WriteLine( "{0};{1}", indent, line );
+            }
+        }
+
+        private void WriteProcCommentBlock( string comment, StreamWriter writer )
+        {
+            WriteCommentBlock( comment, "", writer );
+        }
+
+        private bool CommentMatchesProcPattern( string comment )
+        {
+            return !string.IsNullOrEmpty( comment )
+                && _procPatternRegex != null
+                && _procPatternRegex.IsMatch( comment );
         }
 
         private void WriteRamSegmentLabel( Segment segment, StreamWriter writer )

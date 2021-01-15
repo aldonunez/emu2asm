@@ -101,7 +101,7 @@ namespace emu2asm.NesMlb
                     break;
 
                 default:
-                    if ( !IsSubstringWhitespace( lineStart, lineEnd ) )
+                    if ( !IsLineWhitespace( lineStart, lineEnd ) )
                         throw new ApplicationException();
                     break;
             }
@@ -124,8 +124,8 @@ namespace emu2asm.NesMlb
                     && (_index + 1) < _comment.Length
                     && _comment[_index + 1] == 'n' )
                 {
-                    int lineEnd = _index;
                     _index += 2;
+                    int lineEnd = _index;
                     return lineEnd;
                 }
             }
@@ -149,28 +149,32 @@ namespace emu2asm.NesMlb
 
             var subattrSpan = attrSpan.Slice( 5, attrSpan.Length - 6 );
 
+            TrimLineSeparatorInSection();
+
             if ( subattrSpan.Equals( "BELOW", StringComparison.Ordinal ) )
             {
                 ProcessBelowAttribute( attrEnd, lineEnd );
             }
             else if ( subattrSpan.Equals( "SIDE", StringComparison.Ordinal ) )
             {
-                ProcessSideAttribute( attrEnd, lineEnd );
+                lineEnd = ProcessSideAttribute( attrEnd, lineEnd );
             }
             else
             {
                 if ( _attribute != null )
                     throw new ApplicationException( "The comment has more than one attribute." );
 
-                ProcessAttributeObject( ref subattrSpan, attrEnd, lineEnd );
+                lineEnd = ProcessAttributeObject( ref subattrSpan, attrEnd, lineEnd );
             }
 
             return lineEnd;
         }
 
-        private void ProcessAttributeObject( ref ReadOnlySpan<char> subattrSpan, int attrEnd, int lineEnd )
+        private int ProcessAttributeObject( ref ReadOnlySpan<char> subattrSpan, int attrEnd, int lineEnd )
         {
             object attribute;
+
+            lineEnd = TrimLineSeparatorInLine( attrEnd, lineEnd );
 
             _section = Section.Attribute;
 
@@ -210,6 +214,8 @@ namespace emu2asm.NesMlb
             }
 
             _attribute = attribute;
+
+            return lineEnd;
         }
 
         private int ReadOptionalAttribute( int start )
@@ -252,24 +258,56 @@ namespace emu2asm.NesMlb
             return true;
         }
 
+        private bool IsLineWhitespace( int start, int end )
+        {
+            if ( (end - start) >= 2
+                && _comment[end - 1] == 'n'
+                && _comment[end - 2] == '\\' )
+                end -= 2;
+
+            return IsSubstringWhitespace( start, end );
+        }
+
         private void ProcessBelowAttribute( int attrEnd, int lineEnd )
         {
             if ( _section != Section.AboveLabel )
                 throw new ApplicationException();
 
-            bool allSpace = IsSubstringWhitespace( attrEnd, lineEnd );
+            bool allSpace = IsLineWhitespace( attrEnd, lineEnd );
 
             _section = Section.BelowLabel;
             _partBelowStart = allSpace ? _index : attrEnd;
         }
 
-        private void ProcessSideAttribute( int attrEnd, int lineEnd )
+        private int ProcessSideAttribute( int attrEnd, int lineEnd )
         {
             if ( _section != Section.AboveLabel && _section != Section.BelowLabel )
                 throw new ApplicationException();
 
+            lineEnd = TrimLineSeparatorInLine( attrEnd, lineEnd );
+
             _section = Section.NextToInstruction;
             _partSideStart = attrEnd;
+
+            return lineEnd;
+        }
+
+        private void TrimLineSeparatorInSection()
+        {
+            if ( _section == Section.AboveLabel && (_partAboveEnd - _partAboveStart) >= 2 )
+                _partAboveEnd -= 2;
+            else if ( _section == Section.BelowLabel && (_partBelowEnd - _partBelowStart) >= 2 )
+                _partBelowEnd -= 2;
+        }
+
+        private int TrimLineSeparatorInLine( int attrEnd, int lineEnd )
+        {
+            if ( (lineEnd - attrEnd) >= 2
+                && _comment[lineEnd - 1] == 'n'
+                && _comment[lineEnd - 2] == '\\' )
+                lineEnd -= 2;
+
+            return lineEnd;
         }
     }
 
