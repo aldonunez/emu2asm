@@ -78,6 +78,14 @@ namespace emu2asm.NesMlb
             return offset - NamespaceBase;
         }
 
+        public int GetRomOffsetFromNSOffset( int nsOffset )
+        {
+            if ( Type == SegmentType.SaveRam )
+                return (nsOffset + 0x6000) - Address + Offset;
+            else
+                return nsOffset;
+        }
+
         public XmlSchema GetSchema() => null;
 
         public void ReadXml( XmlReader reader )

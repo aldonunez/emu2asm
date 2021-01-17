@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 using Disasm6502;
 
@@ -22,11 +23,12 @@ namespace emu2asm.NesMlb
         private List<Segment> _fixedSegments = new();
 
         private Regex _procPatternRegex;
-        private Regex _cheapLabelRegex;
+        private StringBuilder _unnamedLabelStringBuilder = new();
 
         public bool SeparateUnknown { get; set; }
         public bool EnableComments { get; set; }
         public bool EnableCheapLabels { get; set; }
+        public bool EnableUnnamedLabels { get; set; }
 
         public Disassembler(
             Config config,
@@ -51,7 +53,6 @@ namespace emu2asm.NesMlb
             _fixedSegments.Add( _config.Banks[7].Segments[2] );
 
             MakeProcPatternRegex();
-            _cheapLabelRegex = new Regex( "^L[0-9A-F]{2,}_(.+)" );
         }
 
         private void MakeProcPatternRegex()
@@ -176,8 +177,8 @@ namespace emu2asm.NesMlb
                         {
                             FlushDataBlock( dataBlock, writer );
                             string labelName = subjLabel.Name;
-                            if ( EnableCheapLabels )
-                                labelName = MakeCheapLabel( subjLabel.Name );
+                            if ( EnableCheapLabels || EnableUnnamedLabels )
+                                labelName = ConvertAutojumpLabel( subjLabel.Name );
                             writer.WriteLine( "{0}:", labelName );
                         }
 
@@ -223,10 +224,12 @@ namespace emu2asm.NesMlb
                                 var operand = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
 
                                 if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
-                                    memoryName = operand.Name;
-
-                                if ( EnableCheapLabels && memoryName != null )
-                                    memoryName = MakeCheapLabel( memoryName );
+                                {
+                                    if ( EnableCheapLabels || EnableUnnamedLabels )
+                                        memoryName = ReferenceAutojumpLabel( operand, segment, romOffset );
+                                    else
+                                        memoryName = operand.Name;
+                                }
                             }
                         }
 
@@ -300,14 +303,100 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private string MakeCheapLabel( string name )
+        private string ConvertAutojumpLabel( string name )
         {
-            Match match = _cheapLabelRegex.Match( name );
+            Match match = LabelDatabase.AutojumpLabelRegex.Match( name );
 
             if ( !match.Success )
                 return name;
 
-            return "@" + match.Groups[1].Value;
+            if ( match.Groups[1].Success )
+            {
+                if ( EnableCheapLabels )
+                    return "@" + match.Groups[1].Value;
+            }
+            else
+            {
+                if ( EnableUnnamedLabels )
+                    return "";
+            }
+
+            return name;
+        }
+
+        private string ReferenceAutojumpLabel( LabelRecord label, Segment segment, int instOffset )
+        {
+            Match match = LabelDatabase.AutojumpLabelRegex.Match( label.Name );
+
+            if ( !match.Success )
+                return label.Name;
+
+            if ( match.Groups[1].Success )
+            {
+                if ( EnableCheapLabels )
+                    return "@" + match.Groups[1].Value;
+            }
+            else
+            {
+                if ( EnableUnnamedLabels )
+                    return ReferenceUnnamedLabel( label, segment, instOffset );
+            }
+
+            return label.Name;
+        }
+
+        private string ReferenceUnnamedLabel( LabelRecord label, Segment segment, int instOffset )
+        {
+            int targetIndex = segment.Namespace.Autojump.IndexOfKey( label.Address );
+
+            if ( targetIndex < 0 )
+                throw new Exception( string.Format( "Auto-jump label wasn't found: {0}", label.Name ) );
+
+            int targetOffset = segment.GetRomOffsetFromNSOffset( label.Address );
+            int distance = 0;
+
+            if ( targetOffset <= instOffset )
+            {
+                for ( ; targetOffset <= instOffset; distance-- )
+                {
+                    targetIndex++;
+                    if ( targetIndex < segment.Namespace.Autojump.Count )
+                    {
+                        int nsOffset = segment.Namespace.Autojump.Values[targetIndex].Address;
+                        targetOffset = segment.GetRomOffsetFromNSOffset( nsOffset );
+                    }
+                    else
+                    {
+                        targetOffset = int.MaxValue;
+                    }
+                }
+            }
+            else
+            {
+                for ( ; targetOffset > instOffset; distance++ )
+                {
+                    targetIndex--;
+                    if ( targetIndex >= 0 )
+                    {
+                        int nsOffset = segment.Namespace.Autojump.Values[targetIndex].Address;
+                        targetOffset = segment.GetRomOffsetFromNSOffset( nsOffset );
+                    }
+                    else
+                    {
+                        targetOffset = -1;
+                    }
+                }
+            }
+
+            _unnamedLabelStringBuilder.Clear();
+            _unnamedLabelStringBuilder.Append( ':' );
+
+            if ( distance < 0 )
+                _unnamedLabelStringBuilder.Append( '-', -distance );
+            else
+                _unnamedLabelStringBuilder.Append( '+', distance );
+
+            return _unnamedLabelStringBuilder.ToString();
         }
 
         private void TurnAboveIntoSideComment( ref CommentParts parts )
@@ -1211,6 +1300,8 @@ namespace emu2asm.NesMlb
 
                 if ( !_labelDb.SaveRam.ByName.TryGetValue( labelName, out LabelRecord record ) )
                 {
+                    bool addName = false;
+
                     if ( !_labelDb.SaveRam.ByAddress.TryGetValue( relAddr, out record ) )
                     {
                         record = new LabelRecord
@@ -1222,12 +1313,20 @@ namespace emu2asm.NesMlb
                         };
 
                         _labelDb.SaveRam.ByAddress.Add( relAddr, record );
-                        _labelDb.SaveRam.ByName.Add( record.Name, record );
+                        addName = true;
                     }
                     else if ( string.IsNullOrEmpty( record.Name ) )
                     {
                         record.Name = labelName;
+                        addName = true;
+                    }
+
+                    if ( addName )
+                    {
                         _labelDb.SaveRam.ByName.Add( record.Name, record );
+
+                        if ( LabelDatabase.PlainAutojumpRegex.IsMatch( record.Name ) )
+                            _labelDb.SaveRam.Autojump.Add( record.Address, record );
                     }
                 }
             }

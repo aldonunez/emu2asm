@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text.RegularExpressions;
 
 namespace emu2asm.NesMlb
 {
@@ -27,6 +28,7 @@ namespace emu2asm.NesMlb
     {
         public Dictionary<string, LabelRecord> ByName = new();
         public Dictionary<int, LabelRecord> ByAddress = new();
+        public SortedList<int, LabelRecord> Autojump = new();
     }
 
     class LabelDatabase
@@ -36,6 +38,9 @@ namespace emu2asm.NesMlb
         public LabelNamespace SaveRam = new();
         public LabelNamespace WorkRam = new();
         public LabelNamespace Registers = new();
+
+        public static Regex AutojumpLabelRegex = new Regex( "^L[0-9A-F]{2,}(?:_(.+))?$" );
+        public static Regex PlainAutojumpRegex = new Regex( "^L[0-9A-F]{2,}$" );
 
         public static LabelDatabase Make( TextReader textReader )
         {
@@ -100,7 +105,12 @@ namespace emu2asm.NesMlb
                     labelNamespace.ByAddress.Add( record.Address, record );
 
                     if ( !string.IsNullOrEmpty( record.Name ) )
+                    {
                         labelNamespace.ByName.Add( record.Name, record );
+
+                        if ( PlainAutojumpRegex.IsMatch( record.Name ) )
+                            labelNamespace.Autojump.Add( record.Address, record );
+                    }
                 }
 
                 line = textReader.ReadLine();
