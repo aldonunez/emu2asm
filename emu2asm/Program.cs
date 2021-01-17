@@ -28,11 +28,14 @@ namespace emu2asm
                 new Option<bool>(
                     "--enable-comments",
                     "Include comments in the disassembly" ),
+                new Option<bool>(
+                    "--enable-cheap-labels",
+                    "Turn auto-jump labels with a suffix into cheap labels" ),
             };
 
             disasmCmd.Handler = CommandHandler.Create<
                 string, string, string, string,
-                bool, bool
+                bool, bool, bool
                 >( Disassemble );
 
             var rootCmd = new RootCommand
@@ -45,11 +48,11 @@ namespace emu2asm
 
         private static void Disassemble(
             string config, string rom, string coverage, string labels,
-            bool separateUnknown, bool enableComments )
+            bool separateUnknown, bool enableComments, bool enableCheapLabels )
         {
             NesMlb.Processor.Disassemble(
                 config, rom, coverage, labels,
-                separateUnknown, enableComments );
+                separateUnknown, enableComments, enableCheapLabels );
         }
     }
 }

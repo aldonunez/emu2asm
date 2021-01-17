@@ -22,9 +22,11 @@ namespace emu2asm.NesMlb
         private List<Segment> _fixedSegments = new();
 
         private Regex _procPatternRegex;
+        private Regex _cheapLabelRegex;
 
         public bool SeparateUnknown { get; set; }
         public bool EnableComments { get; set; }
+        public bool EnableCheapLabels { get; set; }
 
         public Disassembler(
             Config config,
@@ -49,6 +51,7 @@ namespace emu2asm.NesMlb
             _fixedSegments.Add( _config.Banks[7].Segments[2] );
 
             MakeProcPatternRegex();
+            _cheapLabelRegex = new Regex( "^L[0-9A-F]{2,}_(.+)" );
         }
 
         private void MakeProcPatternRegex()
@@ -172,7 +175,10 @@ namespace emu2asm.NesMlb
                         if ( !string.IsNullOrEmpty( subjLabel.Name ) )
                         {
                             FlushDataBlock( dataBlock, writer );
-                            writer.WriteLine( "{0}:", subjLabel.Name );
+                            string labelName = subjLabel.Name;
+                            if ( EnableCheapLabels )
+                                labelName = MakeCheapLabel( subjLabel.Name );
+                            writer.WriteLine( "{0}:", labelName );
                         }
 
                         if ( EnableComments )
@@ -218,6 +224,9 @@ namespace emu2asm.NesMlb
 
                                 if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
                                     memoryName = operand.Name;
+
+                                if ( EnableCheapLabels && memoryName != null )
+                                    memoryName = MakeCheapLabel( memoryName );
                             }
                         }
 
@@ -289,6 +298,16 @@ namespace emu2asm.NesMlb
 
                 FlushDataBlock( dataBlock, writer );
             }
+        }
+
+        private string MakeCheapLabel( string name )
+        {
+            Match match = _cheapLabelRegex.Match( name );
+
+            if ( !match.Success )
+                return name;
+
+            return "@" + match.Groups[1].Value;
         }
 
         private void TurnAboveIntoSideComment( ref CommentParts parts )
