@@ -100,10 +100,11 @@ namespace emu2asm.NesMlb
 
         public void Disassemble()
         {
-            TraceLabels();
             ClearUnusedCoverageBit();
             MarkSaveRamCodeCoverage();
             GenerateSaveRamJumpLabels();
+
+            TraceLabels();
             TraceCode();
 
             foreach ( var bank in _config.Banks )
@@ -278,7 +279,7 @@ namespace emu2asm.NesMlb
                                 throw new ApplicationException();
 
                             if ( !dataAttr.WriteBlock( this, segment, romOffset, subjLabel, writer ) )
-                                WriteDataBlock( romOffset, subjLabel.Length, writer );
+                                WriteAddressTable( segment, romOffset, subjLabel, writer );
 
                             romOffset += subjLabel.Length - 1;
                         }
@@ -718,10 +719,10 @@ namespace emu2asm.NesMlb
             return inst.Value >= 0x8000;
         }
 
-        private static bool IsCallToSwitchableBank( InstDisasm inst )
+        private static bool IsReferenceToSwitchableBank( InstDisasm inst )
         {
-            return (inst.Class == Class.JMP || inst.Class == Class.JSR)
-                && inst.Mode == Mode.a && inst.Value >= 0x8000 && inst.Value < 0xC000;
+            return (inst.Class != Class.STA && inst.Class != Class.STX && inst.Class != Class.STY)
+                && IsAbsolute( inst.Mode ) && inst.Value >= 0x8000 && inst.Value < 0xC000;
         }
 
         private const byte TracedBankKnownFlag = 0x80;
@@ -755,8 +756,9 @@ namespace emu2asm.NesMlb
             TraceCallsToFixedBank();
             TraceCallsInFixedBank();
 
-            CollateSwitchableExports();
             ReportTracedCalls();
+
+            CollateImports();
         }
 
         private void TraceCallsInFixedBank()
@@ -862,9 +864,7 @@ namespace emu2asm.NesMlb
                                 if ( mappedBank >= 0
                                     && _labelDb.Program.ByAddress.TryGetValue( tableOffset, out record ) )
                                 {
-                                    // TODO: Validate the table length
-                                    if ( (record.Length % 2) != 0 )
-                                        throw new ApplicationException();
+                                    ValidateJumpTable( tableOffset, record );
 
                                     for ( int i = 0; i < record.Length; i += 2 )
                                     {
@@ -955,31 +955,33 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private void CollateSwitchableExports()
+        private void CollateImports()
         {
-            Segment curSegment;
-
-            var disasm = new Disasm6502.Disassembler();
+            Segment callerSeg;
 
             foreach ( var bankInfo in _config.Banks )
             {
                 foreach ( var segment in bankInfo.Segments )
                 {
-                    if ( segment.Address >= 0x8000 && segment.Address < 0xC000 )
-                        continue;
-
                     int endOffset = segment.Offset + segment.Size;
                     int addr = segment.Address;
 
-                    curSegment = segment;
+                    callerSeg = segment;
                     ProcessBankCode( segment.Offset, endOffset, addr, ProcessInstruction );
-                    ProcessSwitchableData( segment );
+                    ProcessDataImports( segment );
                 }
             }
 
             void ProcessInstruction( InstDisasm inst, int offset )
             {
-                if ( IsCallToSwitchableBank( inst ) )
+                LabelRecord label = null;
+                Segment calleeSeg = null;
+
+                if ( !IsAbsolute( inst.Mode ) )
+                    return;
+
+                if ( (callerSeg.Type == SegmentType.SaveRam || callerSeg.Address >= 0xC000)
+                    && IsReferenceToSwitchableBank( inst ) )
                 {
                     int bank = GetBankMapping( offset );
 
@@ -989,57 +991,113 @@ namespace emu2asm.NesMlb
                         var bankInfo = _config.Banks[bank];
                         int labelOffset = GetOffsetFromAddress( bankInfo, inst.Value );
 
-                        if ( _labelDb.Program.ByAddress.TryGetValue( labelOffset, out LabelRecord record ) )
+                        if ( _labelDb.Program.ByAddress.TryGetValue( labelOffset, out label ) )
                         {
-                            var sourceSeg = FindSegmentByAddress( bankInfo, inst.Value );
-                            Debug.Assert( sourceSeg != null );
-
-                            if ( sourceSeg.Parent != curSegment.Parent )
-                            {
-                                AddImport( curSegment, record, sourceSeg );
-                                AddExport( sourceSeg, record );
-                            }
+                            calleeSeg = FindSegmentByAddress( bankInfo, inst.Value );
+                            Debug.Assert( calleeSeg != null );
                         }
+                    }
+                }
+                else
+                {
+                    calleeSeg = FindFixedSegmentByAddress( inst.Value );
+
+                    if ( calleeSeg == null || calleeSeg.Id == callerSeg.Id )
+                        return;
+
+                    int targetOffset = GetOffsetFromAddress( calleeSeg, inst.Value );
+                    int nsOffset = calleeSeg.GetNamespaceOffset( targetOffset );
+
+                    calleeSeg.Namespace.ByAddress.TryGetValue( nsOffset, out label );
+                }
+
+                if ( label != null && calleeSeg.Parent != callerSeg.Parent )
+                {
+                    AddImport( callerSeg, label, source: calleeSeg );
+                    AddExport( calleeSeg, label );
+                }
+            }
+        }
+
+        private void ProcessDataImports( Segment callerSeg )
+        {
+            int endOffset = callerSeg.Offset + callerSeg.Size;
+
+            for ( int offset = callerSeg.Offset; offset < endOffset; offset++ )
+            {
+                if ( (_coverage[offset] & 0x11) == 0 && (_tracedCoverage[offset] & 0x40) != 0 )
+                {
+                    int nsOffset = callerSeg.GetNamespaceOffset( offset );
+
+                    if ( callerSeg.Namespace.ByAddress.TryGetValue( nsOffset, out var tableLabel ) )
+                    {
+                        // TODO: Assumes that there are no imports in addr tables in RAM segments
+
+                        if ( callerSeg.Type == SegmentType.SaveRam || callerSeg.Address >= 0xC000 )
+                        {
+                            PortFixedSegmentAddressTable( callerSeg, tableLabel, offset );
+                        }
+                        else
+                        {
+                            PortSwitchableSegmentAddressTable( callerSeg, tableLabel, offset );
+                        }
+
+                        offset += tableLabel.Length - 1;
                     }
                 }
             }
         }
 
-        void ProcessSwitchableData( Segment segment )
+        private void PortFixedSegmentAddressTable( Segment callerSeg, LabelRecord tableLabel, int offset )
         {
-            int endOffset = segment.Offset + segment.Size;
             byte[] image = _rom.Image;
 
-            for ( int offset = segment.Offset; offset < endOffset; offset++ )
+            int bank = _tracedCoverage[offset] & 0x0F;
+            Bank bankInfo = _config.Banks[bank];
+
+            for ( int i = 0; i < tableLabel.Length; i += 2, offset += 2 )
             {
-                if ( (_coverage[offset] & 0x11) == 0 && (_tracedCoverage[offset] & 0x40) != 0 )
+                ushort addr = (ushort) (image[offset] | (image[offset + 1] << 8));
+
+                if ( addr >= 0x8000 && addr < 0xC000 )
                 {
-                    int nsOffset = segment.GetNamespaceOffset( offset );
-                    int bank = _tracedCoverage[offset] & 0x0F;
-                    Bank bankInfo = _config.Banks[bank];
+                    var entryLabel = FindAbsoluteAddressLabel( callerSeg, addr, offset );
 
-                    if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out var tableLabel )
-                        && tableLabel.Length >= 2 )
+                    if ( entryLabel != null && !string.IsNullOrEmpty( entryLabel.Name ) )
                     {
-                        for ( int i = 0; i < tableLabel.Length; i += 2, offset += 2 )
+                        Segment calleeSeg = FindSegmentByAddress( bankInfo, addr );
+
+                        AddImport( callerSeg, entryLabel, calleeSeg );
+                        AddExport( calleeSeg, entryLabel );
+                    }
+                }
+            }
+        }
+
+        private void PortSwitchableSegmentAddressTable( Segment callerSeg, LabelRecord tableLabel, int offset )
+        {
+            int tableOffset = offset;
+
+            for ( int i = 0; i < tableLabel.Length; i += 2 )
+            {
+                int o = tableOffset + i;
+                ushort entryAddr = (ushort) (_rom.Image[o] | (_rom.Image[o + 1] << 8));
+
+                if ( !callerSeg.IsAddressInside( entryAddr ) )
+                {
+                    Segment calleeSeg = FindFixedSegmentByAddress( entryAddr );
+
+                    if ( calleeSeg != null && calleeSeg.Parent != callerSeg.Parent )
+                    {
+                        int target = GetOffsetFromAddress( calleeSeg, entryAddr );
+
+                        int nsTargetOffset = calleeSeg.GetNamespaceOffset( target );
+
+                        if ( calleeSeg.Namespace.ByAddress.TryGetValue( nsTargetOffset, out var record ) )
                         {
-                            ushort addr = (ushort) (image[offset] | (image[offset + 1] << 8));
-
-                            if ( addr >= 0x8000 && addr < 0xC000 )
-                            {
-                                var entryLabel = FindAbsoluteAddressLabel( segment, addr, offset );
-
-                                if ( entryLabel != null && !string.IsNullOrEmpty( entryLabel.Name ) )
-                                {
-                                    Segment calleeSeg = FindSegmentByAddress( bankInfo, addr );
-
-                                    AddImport( segment, entryLabel, calleeSeg );
-                                    AddExport( calleeSeg, entryLabel );
-                                }
-                            }
+                            AddImport( callerSeg, record, source: calleeSeg );
+                            AddExport( calleeSeg, record );
                         }
-
-                        offset--;
                     }
                 }
             }
@@ -1112,7 +1170,7 @@ namespace emu2asm.NesMlb
 
             void ProcessInstruction( InstDisasm inst, int offset )
             {
-                if ( IsCallToSwitchableBank( inst ) )
+                if ( IsReferenceToSwitchableBank( inst ) )
                 {
                     bool   traced = (_tracedCoverage[offset] & 0x40) != 0;
                     int    bank = GetBankMapping( offset );
@@ -1169,6 +1227,9 @@ namespace emu2asm.NesMlb
 
                 foreach ( var segment in bankInfo.Segments )
                 {
+                    if ( segment.Type != SegmentType.Program || segment.Address >= 0xC000 )
+                        continue;
+
                     int endOffset = segment.Offset + segment.Size;
                     int addr = segment.Address;
 
@@ -1179,24 +1240,20 @@ namespace emu2asm.NesMlb
 
             void ProcessInstruction( InstDisasm inst, int offset )
             {
-                if ( !IsAbsolute( inst.Mode ) )
+                if ( inst.Class != Class.JMP && inst.Class != Class.JSR )
                     return;
 
                 Segment calleeSeg = null;
 
-                if ( inst.Class == Class.JSR && inst.Value == 0xE5E2
-                    && callerSeg.Type == SegmentType.Program && callerSeg.Address < 0xC000 )
+                if ( inst.Class == Class.JSR && inst.Value == 0xE5E2 )
                 {
                     int instLen = Disasm6502.Disassembler.GetInstructionLengthByMode( inst.Mode );
-
                     int tableOffset = offset + instLen;
                     LabelRecord tableLabel;
 
                     if ( _labelDb.Program.ByAddress.TryGetValue( tableOffset, out tableLabel ) )
                     {
-                        // TODO: Validate the table length
-                        if ( (tableLabel.Length % 2) != 0 )
-                            throw new ApplicationException();
+                        ValidateJumpTable( tableOffset, tableLabel );
 
                         for ( int i = 0; i < tableLabel.Length; i += 2 )
                         {
@@ -1211,13 +1268,8 @@ namespace emu2asm.NesMlb
                                 {
                                     int target = GetOffsetFromAddress( calleeSeg, entryAddr );
 
-                                    int nsOffset = calleeSeg.GetNamespaceOffset( target );
-
-                                    if ( calleeSeg.Namespace.ByAddress.TryGetValue( nsOffset, out var record ) )
-                                    {
-                                        AddImport( callerSeg, record, source: calleeSeg );
-                                        AddExport( calleeSeg, record );
-                                    }
+                                    _tracedCoverage[target] = (byte) (bankNumber | 0x20);
+                                    _originCoverage[target] = offset;
                                 }
                             }
                         }
@@ -1226,14 +1278,7 @@ namespace emu2asm.NesMlb
                     }
                 }
 
-                foreach ( var segment in _fixedSegments )
-                {
-                    if ( segment.IsAddressInside( inst.Value ) )
-                    {
-                        calleeSeg = segment;
-                        break;
-                    }
-                }
+                calleeSeg = FindFixedSegmentByAddress( inst.Value );
 
                 if ( calleeSeg == null || calleeSeg.Id == callerSeg.Id )
                     return;
@@ -1241,23 +1286,22 @@ namespace emu2asm.NesMlb
                 int targetOffset = GetOffsetFromAddress( calleeSeg, inst.Value );
 
                 if ( (inst.Class == Class.JMP || inst.Class == Class.JSR)
-                    && inst.Mode == Mode.a
-                    && callerSeg.Type == SegmentType.Program && callerSeg.Address < 0xC000 )
+                    && inst.Mode == Mode.a )
                 {
                     _tracedCoverage[targetOffset] = (byte) (bankNumber | 0x20);
                     _originCoverage[targetOffset] = offset;
                 }
+            }
+        }
 
-                if ( calleeSeg.Parent != callerSeg.Parent )
-                {
-                    int nsOffset = calleeSeg.GetNamespaceOffset( targetOffset );
-
-                    if ( calleeSeg.Namespace.ByAddress.TryGetValue( nsOffset, out LabelRecord record ) )
-                    {
-                        AddImport( callerSeg, record, source: calleeSeg );
-                        AddExport( calleeSeg, record );
-                    }
-                }
+        private static void ValidateJumpTable( int tableOffset, LabelRecord tableLabel )
+        {
+            if ( tableLabel.Length == 0 || (tableLabel.Length % 2) != 0 )
+            {
+                string message = string.Format(
+                    "Jump table must have an even number of bytes at least 2: {0}",
+                    tableLabel.Name );
+                throw new Exception( message );
             }
         }
 
