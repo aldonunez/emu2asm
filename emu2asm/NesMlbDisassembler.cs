@@ -24,11 +24,13 @@ namespace emu2asm.NesMlb
 
         private Regex _procPatternRegex;
         private StringBuilder _unnamedLabelStringBuilder = new();
+        private BlockLabelComparer _blockLabelComparer = new();
 
         public bool SeparateUnknown { get; set; }
         public bool EnableComments { get; set; }
         public bool EnableCheapLabels { get; set; }
         public bool EnableUnnamedLabels { get; set; }
+        public bool EnableEmbeddedRefs { get; set; }
 
         public Disassembler(
             Config config,
@@ -223,7 +225,12 @@ namespace emu2asm.NesMlb
                             {
                                 var operand = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
 
-                                if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
+                                if ( operand == null )
+                                {
+                                    if ( EnableEmbeddedRefs )
+                                        memoryName = FindOffsetLabel( segment, inst.Value, romOffset );
+                                }
+                                else if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
                                 {
                                     if ( EnableCheapLabels || EnableUnnamedLabels )
                                         memoryName = ReferenceAutojumpLabel( operand, segment, romOffset );
@@ -564,9 +571,9 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private LabelRecord FindAbsoluteAddressLabel( Segment segment, ushort addr, int instOffset )
+        private (int, LabelNamespace) GetAbsoluteAddressNamespaceOffset(
+            Segment segment, ushort addr, int instOffset )
         {
-            LabelRecord record;
             LabelNamespace labelNamespace;
             int absOffset;
 
@@ -614,10 +621,37 @@ namespace emu2asm.NesMlb
                 labelNamespace = _labelDb.Program;
             }
 
-            if ( labelNamespace.ByAddress.TryGetValue( absOffset, out record ) )
+            return (absOffset, labelNamespace);
+        }
+
+        private LabelRecord FindAbsoluteAddressLabel( Segment segment, ushort addr, int instOffset )
+        {
+            var (absOffset, labelNamespace) =
+                GetAbsoluteAddressNamespaceOffset( segment, addr, instOffset );
+
+            if ( labelNamespace.ByAddress.TryGetValue( absOffset, out var record ) )
                 return record;
 
             return null;
+        }
+
+        private string FindOffsetLabel( Segment segment, ushort addr, int instOffset )
+        {
+            var (absOffset, labelNamespace) =
+                GetAbsoluteAddressNamespaceOffset( segment, addr, instOffset );
+
+            _blockLabelComparer.NSOffset = absOffset;
+
+            int index = labelNamespace.SortedNames.BinarySearch( null, _blockLabelComparer );
+
+            if ( index < 0 )
+                return null;
+
+            // Prepare the expression.
+
+            int offset = absOffset - labelNamespace.SortedNames[index].Address;
+
+            return string.Format( "{0}+{1}", labelNamespace.SortedNames[index].Name, offset );
         }
 
         private void WriteDataBlock( int start, int length, StreamWriter writer )
@@ -1505,5 +1539,34 @@ namespace emu2asm.NesMlb
                 offset );
             throw new ApplicationException( message );
         }
+
+
+        #region Inner classes
+
+        private class BlockLabelComparer : IComparer<LabelRecord>
+        {
+            public int NSOffset { get; set; }
+
+            public int Compare( LabelRecord x, LabelRecord y )
+            {
+                if ( x.Address < NSOffset )
+                {
+                    if ( (x.Address + x.Length) <= NSOffset )
+                        return -1;
+
+                    return 0;
+                }
+                else if ( x.Address == NSOffset )
+                {
+                    return 0;
+                }
+                else
+                {
+                    return 1;
+                }
+            }
+        }
+
+        #endregion
     }
 }

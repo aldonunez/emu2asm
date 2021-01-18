@@ -29,6 +29,7 @@ namespace emu2asm.NesMlb
         public Dictionary<string, LabelRecord> ByName = new();
         public Dictionary<int, LabelRecord> ByAddress = new();
         public SortedList<int, LabelRecord> Autojump = new();
+        public List<LabelRecord> SortedNames = new();
     }
 
     class LabelDatabase
@@ -107,6 +108,9 @@ namespace emu2asm.NesMlb
                     if ( !string.IsNullOrEmpty( record.Name ) )
                     {
                         labelNamespace.ByName.Add( record.Name, record );
+
+                        if ( record.Length > 1 )
+                            labelNamespace.SortedNames.Add( record );
 
                         if ( PlainAutojumpRegex.IsMatch( record.Name ) )
                             labelNamespace.Autojump.Add( record.Address, record );

@@ -34,11 +34,14 @@ namespace emu2asm
                 new Option<bool>(
                     "--enable-unnamed-labels",
                     "Turn auto-jump labels without a suffix into unnamed labels" ),
+                new Option<bool>(
+                    "--enable-embedded-refs",
+                    "List offsets from labeled data blocks" ),
             };
 
             disasmCmd.Handler = CommandHandler.Create<
                 string, string, string, string,
-                bool, bool, bool, bool
+                bool, bool, bool, bool, bool
                 >( Disassemble );
 
             var rootCmd = new RootCommand
@@ -52,12 +55,12 @@ namespace emu2asm
         private static void Disassemble(
             string config, string rom, string coverage, string labels,
             bool separateUnknown, bool enableComments, bool enableCheapLabels,
-            bool enableUnnamedLabels )
+            bool enableUnnamedLabels, bool enableEmbeddedRefs )
         {
             NesMlb.Processor.Disassemble(
                 config, rom, coverage, labels,
                 separateUnknown, enableComments, enableCheapLabels,
-                enableUnnamedLabels );
+                enableUnnamedLabels, enableEmbeddedRefs );
         }
     }
 }

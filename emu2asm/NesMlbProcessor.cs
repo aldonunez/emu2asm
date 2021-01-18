@@ -13,7 +13,8 @@ namespace emu2asm.NesMlb
             bool separateUnknown,
             bool enableComments,
             bool enableCheapLabels,
-            bool enableUnnamedLabels )
+            bool enableUnnamedLabels,
+            bool enableEmbeddedRefs )
         {
             var config = ReadConfig( configPath );
             var romImage = ReadRomImage( romPath );
@@ -30,6 +31,7 @@ namespace emu2asm.NesMlb
             disassembler.EnableComments = enableComments;
             disassembler.EnableCheapLabels = enableCheapLabels;
             disassembler.EnableUnnamedLabels = enableUnnamedLabels;
+            disassembler.EnableEmbeddedRefs = enableEmbeddedRefs;
 
             disassembler.Disassemble();
         }
