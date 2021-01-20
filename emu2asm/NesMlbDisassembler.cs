@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using Disasm6502;
@@ -17,7 +18,7 @@ namespace emu2asm.NesMlb
         private byte[] _tracedCoverage;
         private int[] _originCoverage;
 
-        private readonly LabelNamespace _nullNamepsace = new();
+        private readonly LabelNamespace _nullNamepsace = new( LabelType.Ram );
 
         private List<Segment> _segments = new();
         private List<Segment> _fixedSegments = new();
@@ -55,6 +56,60 @@ namespace emu2asm.NesMlb
             _fixedSegments.Add( _config.Banks[7].Segments[2] );
 
             MakeProcPatternRegex();
+
+            SortLabelsBySegment( _labelDb.Program );
+            SortLabelsBySegment( _labelDb.SaveRam );
+        }
+
+        private void SortLabelsBySegment( LabelNamespace @namespace )
+        {
+            List<Segment> segments;
+
+            if ( @namespace.Type == LabelType.SaveRam )
+            {
+                segments = _segments
+                    .Where( ( s ) => s.Type == SegmentType.SaveRam )
+                    .OrderBy( ( s ) => s.Address )
+                    .ToList();
+            }
+            else if ( @namespace.Type == LabelType.Program )
+            {
+                segments = _segments.Where( ( s ) => s.Type == SegmentType.Program ).ToList();
+            }
+            else
+            {
+                throw new ArgumentException( "Unsupported namespace type" );
+            }
+
+            int segIndex = 0;
+            int labelIndex = 0;
+
+            while ( labelIndex < @namespace.SortedNames.Count && segIndex < segments.Count )
+            {
+                LabelRecord label = @namespace.SortedNames[labelIndex];
+                Segment segment = segments[segIndex];
+
+                int nsSegOffset = segment.GetNamespaceOffset( segment.Offset );
+                int nsSegEndOffset = nsSegOffset + segment.Size;
+
+                if ( nsSegEndOffset <= label.Address )
+                {
+                    segIndex++;
+                }
+                else if ( nsSegOffset <= label.Address )
+                {
+                    label.SegmentId = segment.Id;
+                    labelIndex++;
+                }
+                else
+                {
+                    // This is a label without a segment.
+                    labelIndex++;
+
+                    // If needed, we can implement a "root segment" concept to catch
+                    // all labels in a bank that are not within user-specified segments.
+                }
+            }
         }
 
         private void MakeProcPatternRegex()
@@ -215,31 +270,29 @@ namespace emu2asm.NesMlb
                         if ( instLen < 1 )
                             ThrowBadInstructionError( romOffset );
 
-                        if ( IsZeroPage( inst.Mode ) || inst.Mode == Mode.r
-                            || (IsAbsolute( inst.Mode ) && !WritesToRom( inst )) )
+                        if ( inst.Mode == Mode.r
+                            || (inst.Mode == Mode.a && inst.Class == Class.JMP) )
                         {
-                            if ( attribute is ExprCodeAttribute exprAttr )
-                            {
-                                memoryName = exprAttr.Expression;
-                            }
-                            else
-                            {
-                                var operand = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
+                            var operand = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
 
-                                if ( operand == null )
-                                {
-                                    if ( EnableEmbeddedRefs )
-                                        memoryName = FindOffsetLabel( segment, inst.Value, romOffset );
-                                }
-                                else if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
-                                {
-                                    if ( EnableCheapLabels || EnableUnnamedLabels )
-                                        memoryName = ReferenceAutojumpLabel( operand, segment, romOffset );
-                                    else
-                                        memoryName = operand.Name;
-                                }
+                            if ( operand != null && !string.IsNullOrEmpty( operand.Name ) )
+                            {
+                                if ( EnableCheapLabels || EnableUnnamedLabels )
+                                    memoryName = ReferenceAutojumpLabel( operand, segment, romOffset );
+                                else
+                                    memoryName = operand.Name;
                             }
                         }
+                        else if ( attribute is ExprCodeAttribute exprAttr )
+                        {
+                            memoryName = exprAttr.Expression;
+                        }
+                        else if ( subjLabel != null && subjLabel.OperandExpr != null )
+                        {
+                            memoryName = subjLabel.OperandExpr;
+                        }
+
+                        Debug.Assert( memoryName == null || memoryName.Length > 0 );
 
                         writer.Flush();
                         long lineStartPos = writer.BaseStream.Position;
@@ -636,23 +689,24 @@ namespace emu2asm.NesMlb
             return null;
         }
 
-        private string FindOffsetLabel( Segment segment, ushort addr, int instOffset )
+        private (LabelRecord, int) FindAbsoluteOrOffsetLabel( Segment segment, ushort addr, int instOffset )
         {
             var (absOffset, labelNamespace) =
                 GetAbsoluteAddressNamespaceOffset( segment, addr, instOffset );
+
+            if ( labelNamespace.ByAddress.TryGetValue( absOffset, out var record ) )
+                return (record, 0);
 
             _blockLabelComparer.NSOffset = absOffset;
 
             int index = labelNamespace.SortedNames.BinarySearch( null, _blockLabelComparer );
 
             if ( index < 0 )
-                return null;
-
-            // Prepare the expression.
+                return (null, 0);
 
             int offset = absOffset - labelNamespace.SortedNames[index].Address;
 
-            return string.Format( "{0}+{1}", labelNamespace.SortedNames[index].Name, offset );
+            return (labelNamespace.SortedNames[index], offset);
         }
 
         private void WriteDataBlock( int start, int length, StreamWriter writer )
@@ -972,49 +1026,54 @@ namespace emu2asm.NesMlb
                 }
             }
 
-            void ProcessInstruction( InstDisasm inst, int offset )
+            void ProcessInstruction( InstDisasm inst, int romOffset )
             {
                 LabelRecord label = null;
-                Segment calleeSeg = null;
 
-                if ( !IsAbsolute( inst.Mode ) )
-                    return;
-
-                if ( (callerSeg.Type == SegmentType.SaveRam || callerSeg.Address >= 0xC000)
-                    && IsReferenceToSwitchableBank( inst ) )
+                if ( IsZeroPage( inst.Mode )
+                    || (IsAbsolute( inst.Mode ) && !WritesToRom( inst )) )
                 {
-                    int bank = GetBankMapping( offset );
+                    int opOffset = 0;
 
-                    if ( bank >= 0 )
+                    if ( EnableEmbeddedRefs )
+                        (label, opOffset) = FindAbsoluteOrOffsetLabel( callerSeg, inst.Value, romOffset );
+                    else
+                        label = FindAbsoluteAddressLabel( callerSeg, inst.Value, romOffset );
+
+                    if ( !string.IsNullOrEmpty( label?.Name ) )
                     {
-                        // TODO: for now, assume that prog banks are in the right order
-                        var bankInfo = _config.Banks[bank];
-                        int labelOffset = GetOffsetFromAddress( bankInfo, inst.Value );
+                        int nsOffset = callerSeg.GetNamespaceOffset( romOffset );
+                        LabelRecord instLabel;
 
-                        if ( _labelDb.Program.ByAddress.TryGetValue( labelOffset, out label ) )
+                        if ( !callerSeg.Namespace.ByAddress.TryGetValue( nsOffset, out instLabel ) )
                         {
-                            calleeSeg = FindSegmentByAddress( bankInfo, inst.Value );
-                            Debug.Assert( calleeSeg != null );
+                            instLabel = new LabelRecord()
+                            {
+                                Address = nsOffset,
+                                Length = 1,
+                                SegmentId = callerSeg.Id,
+                                Type = callerSeg.Namespace.Type,
+                            };
+
+                            callerSeg.Namespace.ByAddress.Add( instLabel.Address, instLabel );
                         }
+
+                        if ( opOffset == 0 )
+                            instLabel.OperandExpr = label.Name;
+                        else
+                            instLabel.OperandExpr = string.Format( "{0}+{1}", label.Name, opOffset );
                     }
                 }
-                else
+
+                if ( label != null && label.SegmentId >= 0 )
                 {
-                    calleeSeg = FindFixedSegmentByAddress( inst.Value );
+                    Segment calleeSeg = _segments[label.SegmentId];
 
-                    if ( calleeSeg == null || calleeSeg.Id == callerSeg.Id )
-                        return;
-
-                    int targetOffset = GetOffsetFromAddress( calleeSeg, inst.Value );
-                    int nsOffset = calleeSeg.GetNamespaceOffset( targetOffset );
-
-                    calleeSeg.Namespace.ByAddress.TryGetValue( nsOffset, out label );
-                }
-
-                if ( label != null && calleeSeg.Parent != callerSeg.Parent )
-                {
-                    AddImport( callerSeg, label, source: calleeSeg );
-                    AddExport( calleeSeg, label );
+                    if ( calleeSeg.Parent != callerSeg.Parent )
+                    {
+                        AddImport( callerSeg, label, source: calleeSeg );
+                        AddExport( calleeSeg, label );
+                    }
                 }
             }
         }

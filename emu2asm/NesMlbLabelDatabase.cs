@@ -22,23 +22,29 @@ namespace emu2asm.NesMlb
         public int Address;
         public int Length;
         public string Comment;
+
+        public int SegmentId = -1;
+        public string OperandExpr;
     }
 
     class LabelNamespace
     {
+        public LabelType Type { get; }
         public Dictionary<string, LabelRecord> ByName = new();
         public Dictionary<int, LabelRecord> ByAddress = new();
         public SortedList<int, LabelRecord> Autojump = new();
         public List<LabelRecord> SortedNames = new();
+
+        public LabelNamespace( LabelType type ) => Type = type;
     }
 
     class LabelDatabase
     {
-        public LabelNamespace Program = new();
-        public LabelNamespace Ram = new();
-        public LabelNamespace SaveRam = new();
-        public LabelNamespace WorkRam = new();
-        public LabelNamespace Registers = new();
+        public LabelNamespace Program = new( LabelType.Program );
+        public LabelNamespace Ram = new( LabelType.Ram );
+        public LabelNamespace SaveRam = new( LabelType.SaveRam );
+        public LabelNamespace WorkRam = new( LabelType.WorkRam );
+        public LabelNamespace Registers = new( LabelType.Registers );
 
         public static Regex AutojumpLabelRegex = new Regex( "^L[0-9A-F]{2,}(?:_(.+))?$" );
         public static Regex PlainAutojumpRegex = new Regex( "^L[0-9A-F]{2,}$" );
@@ -108,9 +114,7 @@ namespace emu2asm.NesMlb
                     if ( !string.IsNullOrEmpty( record.Name ) )
                     {
                         labelNamespace.ByName.Add( record.Name, record );
-
-                        if ( record.Length > 1 )
-                            labelNamespace.SortedNames.Add( record );
+                        labelNamespace.SortedNames.Add( record );
 
                         if ( PlainAutojumpRegex.IsMatch( record.Name ) )
                             labelNamespace.Autojump.Add( record.Address, record );
