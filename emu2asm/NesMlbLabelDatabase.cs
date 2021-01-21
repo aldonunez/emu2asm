@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -15,6 +16,16 @@ namespace emu2asm.NesMlb
         Registers,
     }
 
+    enum LabelScope
+    {
+        Unknown,
+        Full,
+        Module,
+        Cheap,
+        Unnamed,
+    }
+
+    [DebuggerDisplay( "{Name}, {Address}" )]
     class LabelRecord
     {
         public LabelType Type;
@@ -25,6 +36,9 @@ namespace emu2asm.NesMlb
 
         public int SegmentId = -1;
         public string OperandExpr;
+
+        public LabelScope Scope;
+        public string CheapTag;
     }
 
     class LabelNamespace

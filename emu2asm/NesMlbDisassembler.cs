@@ -162,6 +162,12 @@ namespace emu2asm.NesMlb
             TraceLabels();
             TraceCode();
 
+            if ( EnableUnnamedLabels )
+                MarkUnnamedLabels();
+
+            if ( EnableCheapLabels )
+                CollateModuleLabels();
+
             foreach ( var bank in _config.Banks )
             {
                 DisassembleBank( bank );
@@ -236,7 +242,7 @@ namespace emu2asm.NesMlb
                             FlushDataBlock( dataBlock, writer );
                             string labelName = subjLabel.Name;
                             if ( EnableCheapLabels || EnableUnnamedLabels )
-                                labelName = ConvertAutojumpLabel( subjLabel.Name );
+                                labelName = ConvertAutojumpLabel( subjLabel );
                             writer.WriteLine( "{0}:", labelName );
                         }
 
@@ -364,46 +370,26 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private string ConvertAutojumpLabel( string name )
+        private string ConvertAutojumpLabel( LabelRecord label )
         {
-            Match match = LabelDatabase.AutojumpLabelRegex.Match( name );
-
-            if ( !match.Success )
-                return name;
-
-            if ( match.Groups[1].Success )
+            return label.Scope switch
             {
-                if ( EnableCheapLabels )
-                    return "@" + match.Groups[1].Value;
-            }
-            else
-            {
-                if ( EnableUnnamedLabels )
-                    return "";
-            }
-
-            return name;
+                LabelScope.Cheap => "@" + label.CheapTag,
+                LabelScope.Module => label.CheapTag,
+                LabelScope.Unnamed => "",
+                _ => label.Name
+            };
         }
 
         private string ReferenceAutojumpLabel( LabelRecord label, Segment segment, int instOffset )
         {
-            Match match = LabelDatabase.AutojumpLabelRegex.Match( label.Name );
-
-            if ( !match.Success )
-                return label.Name;
-
-            if ( match.Groups[1].Success )
+            return label.Scope switch
             {
-                if ( EnableCheapLabels )
-                    return "@" + match.Groups[1].Value;
-            }
-            else
-            {
-                if ( EnableUnnamedLabels )
-                    return ReferenceUnnamedLabel( label, segment, instOffset );
-            }
-
-            return label.Name;
+                LabelScope.Cheap => "@" + label.CheapTag,
+                LabelScope.Module => label.CheapTag,
+                LabelScope.Unnamed => ReferenceUnnamedLabel( label, segment, instOffset ),
+                _ => label.Name
+            };
         }
 
         private string ReferenceUnnamedLabel( LabelRecord label, Segment segment, int instOffset )
@@ -1188,12 +1174,12 @@ namespace emu2asm.NesMlb
             return mapped ? bank : -1;
         }
 
-        private int GetOffsetFromAddress( Bank bankInfo, int address )
+        private static int GetOffsetFromAddress( Bank bankInfo, int address )
         {
             return address - bankInfo.Address + bankInfo.Offset;
         }
 
-        private int GetOffsetFromAddress( Segment segment, int address )
+        private static int GetOffsetFromAddress( Segment segment, int address )
         {
             if ( segment.Type == SegmentType.Program )
                 return address - segment.Parent.Address + segment.Parent.Offset;
@@ -1201,7 +1187,7 @@ namespace emu2asm.NesMlb
                 return address - segment.Address + segment.Offset;
         }
 
-        private Segment FindSegmentByAddress( Bank bankInfo, int address )
+        private static Segment FindSegmentByAddress( Bank bankInfo, int address )
         {
             foreach ( var segment in bankInfo.Segments )
             {
@@ -1544,6 +1530,19 @@ namespace emu2asm.NesMlb
             }
         }
 
+        private void MarkUnnamedLabels()
+        {
+            var autojumpLists = new[] { _labelDb.Program.Autojump, _labelDb.SaveRam.Autojump };
+
+            foreach ( var list in autojumpLists )
+            {
+                foreach ( var label in list.Values )
+                {
+                    label.Scope = LabelScope.Unnamed;
+                }
+            }
+        }
+
         private void WriteDefinitionsFile()
         {
             using var writer = new StreamWriter( "Variables.inc", false, System.Text.Encoding.ASCII );
@@ -1666,6 +1665,194 @@ namespace emu2asm.NesMlb
                 else
                 {
                     return 1;
+                }
+            }
+        }
+
+        #endregion
+
+
+        #region ModuleLabels
+
+        [DebuggerDisplay( "{Label?.Name}, {Begin}..{End}" )]
+        private class CheapRange
+        {
+            public LabelRecord Label;
+            public int Begin;
+            public int End;
+            public CheapRange[] Links;
+        }
+
+        private List<CheapRange> _ranges;
+        private Queue<CheapRange> _rangeQ;
+
+        private void CollateModuleLabels()
+        {
+            foreach ( var segment in _segments )
+            {
+                CollateSegmentModuleLabels( segment );
+            }
+        }
+
+        private void CollateSegmentModuleLabels( Segment segment )
+        {
+            _ranges = new();
+            _rangeQ = new();
+
+            FindCheapRanges( segment );
+            LinkCheapRanges( segment );
+            FindModuleLabels( segment );
+        }
+
+        private void FindCheapRanges( Segment segment )
+        {
+            var labelToRange = new Dictionary<LabelRecord, CheapRange>();
+            int endOffset = segment.Offset + segment.Size;
+
+            ProcessBankCode( segment.Offset, endOffset, segment.Address, ProcessInstruction );
+
+            void ProcessInstruction( InstDisasm inst, int romOffset )
+            {
+                int nsOffset = segment.GetNamespaceOffset( romOffset );
+
+                if ( segment.Namespace.ByAddress.TryGetValue( nsOffset, out var instLabel )
+                    && !string.IsNullOrEmpty( instLabel.Name ) )
+                {
+                    string cheapTag = null;
+                    LabelScope scope = LabelScope.Unknown;
+
+                    if ( instLabel.Scope != LabelScope.Unnamed )
+                    {
+                        Match match = LabelDatabase.AutojumpLabelRegex.Match( instLabel.Name );
+
+                        if ( match.Success && match.Groups[1].Success )
+                        {
+                            scope = LabelScope.Cheap;
+                            cheapTag = match.Groups[1].Value;
+                        }
+                        else
+                        {
+                            scope = LabelScope.Full;
+                        }
+                    }
+
+                    if ( scope != LabelScope.Unknown )
+                    {
+                        AddOrUpdateRange( romOffset, instLabel );
+
+                        instLabel.Scope = scope;
+                        instLabel.CheapTag = cheapTag;
+                    }
+                }
+
+                if ( (inst.Mode == Mode.r
+                    || (inst.Mode == Mode.a && inst.Class == Class.JMP))
+                    && segment.IsAddressInside( inst.Value ) )
+                {
+                    int targetOffset = GetOffsetFromAddress( segment, inst.Value );
+                    int nsTargetOffset = segment.GetNamespaceOffset( targetOffset );
+
+                    if ( segment.Namespace.ByAddress.TryGetValue( nsTargetOffset, out var targetLabel )
+                        && !string.IsNullOrEmpty( targetLabel.Name ) )
+                    {
+                        Match match = LabelDatabase.AutojumpLabelRegex.Match( targetLabel.Name );
+
+                        if ( match.Success && match.Groups[1].Success )
+                        {
+                            AddOrUpdateRange( romOffset + 1, targetLabel );
+                        }
+                    }
+                }
+
+                void AddOrUpdateRange( int romOffset, LabelRecord label )
+                {
+                    CheapRange range;
+
+                    if ( !labelToRange.TryGetValue( label, out range ) )
+                    {
+                        range = new CheapRange();
+                        range.Label = label;
+                        range.Begin = romOffset;
+                        labelToRange.Add( label, range );
+                        _ranges.Add( range );
+                    }
+
+                    if ( range.End < romOffset )
+                        range.End = romOffset;
+                }
+            }
+        }
+
+        private void LinkCheapRanges( Segment segment )
+        {
+            if ( _ranges.Count == 0 )
+                return;
+
+            int begin = _ranges[0].Begin;
+            int end = _ranges[^1].End;
+
+            List<CheapRange> curRanges = new();
+            int nextRangeIndex = 0;
+
+            for ( int romOffset = begin; romOffset <= end; romOffset++ )
+            {
+                for ( int i = curRanges.Count - 1; i >= 0; i-- )
+                {
+                    CheapRange r = curRanges[i];
+
+                    if ( romOffset == r.Label.Address )
+                        r.Links = curRanges.ToArray();
+
+                    if ( romOffset == r.End )
+                        curRanges.RemoveAt( i );
+                }
+
+                while ( nextRangeIndex < _ranges.Count
+                    && _ranges[nextRangeIndex].Begin == romOffset )
+                {
+                    CheapRange r = _ranges[nextRangeIndex];
+
+                    if ( romOffset == r.Label.Address )
+                        r.Links = curRanges.ToArray();
+
+                    if ( r.Label.Scope == LabelScope.Cheap )
+                        curRanges.Add( r );
+                    else
+                        _rangeQ.Enqueue( r );
+
+                    nextRangeIndex++;
+                }
+            }
+        }
+
+        private void FindModuleLabels( Segment segment )
+        {
+            var modNames = new HashSet<string>();
+
+            while ( _rangeQ.Count > 0 )
+            {
+                CheapRange range = _rangeQ.Dequeue();
+
+                if ( range.Links != null )
+                {
+                    foreach ( var link in range.Links )
+                    {
+                        if ( link.Label.Scope == LabelScope.Cheap )
+                        {
+                            if ( !segment.Namespace.ByName.ContainsKey( link.Label.CheapTag )
+                                && !modNames.Contains( link.Label.CheapTag ) )
+                            {
+                                link.Label.Scope = LabelScope.Module;
+                                modNames.Add( link.Label.CheapTag );
+                            }
+                            else
+                            {
+                                link.Label.Scope = LabelScope.Full;
+                            }
+
+                            _rangeQ.Enqueue( link );
+                        }
+                    }
                 }
             }
         }
