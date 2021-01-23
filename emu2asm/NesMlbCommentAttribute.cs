@@ -277,6 +277,9 @@ namespace emu2asm.NesMlb
 
             public override bool WriteBlock( Disassembler disasm, Segment segment, int offset, LabelRecord label, StreamWriter writer )
             {
+                string fullDir = Path.GetDirectoryName( _filename );
+                Directory.CreateDirectory( fullDir );
+
                 using var stream = File.Open( _filename, FileMode.Create );
 
                 stream.Write( disasm._rom.Image, offset, label.Length );

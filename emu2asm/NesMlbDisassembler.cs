@@ -159,7 +159,8 @@ namespace emu2asm.NesMlb
             MarkSaveRamCodeCoverage();
             GenerateSaveRamJumpLabels();
 
-            TraceLabels();
+            ProcessConfigAttributes();
+            ProcessCommentAttributes();
             TraceCode();
 
             if ( EnableUnnamedLabels )
@@ -229,6 +230,14 @@ namespace emu2asm.NesMlb
                             attribute = commentParts.Attribute;
                             sideComment = commentParts.Side;
                             looksLikeProc = CommentMatchesProcPattern( commentParts.Above );
+                        }
+
+                        if ( subjLabel.DataAttribute != null )
+                        {
+                            if ( attribute != null )
+                                throw new Exception( "An attribute was specified in a label and config." );
+
+                            attribute = subjLabel.DataAttribute;
                         }
 
                         if ( EnableComments && looksLikeProc && !string.IsNullOrEmpty( commentParts.Above ) )
@@ -1489,7 +1498,7 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private void TraceLabels()
+        private void ProcessCommentAttributes()
         {
             foreach ( var bankInfo in _config.Banks )
             {
@@ -1527,6 +1536,38 @@ namespace emu2asm.NesMlb
                         nsOffset += size;
                     }
                 }
+            }
+        }
+
+        private void ProcessConfigAttributes()
+        {
+            var allowedAttributes = new Dictionary<string, Type>()
+            {
+                { "IncBin", typeof( IncBinDataAttribute ) }
+            };
+
+            foreach ( var attrConfig in _config.Attributes )
+            {
+                Type attrType = allowedAttributes[attrConfig.Name];
+
+                LabelNamespace @namespace = _labelDb.GetNamespace( attrConfig.Namespace[0] );
+
+                if ( @namespace == null )
+                    throw new Exception();
+
+                LabelRecord label = @namespace.ByAddress[attrConfig.Offset];
+
+                if ( label.SegmentId < 0 )
+                    throw new Exception();
+
+                var dataAttr = (DataAttribute) Activator.CreateInstance(
+                    attrType, attrConfig.Content, 0, attrConfig.Content.Length );
+
+                Segment segment = _segments[label.SegmentId];
+                dataAttr.ProcessBlock( this, segment, attrConfig.Offset, label );
+
+                // Attach it to the label here, so that it can be used to write later.
+                label.DataAttribute = dataAttr;
             }
         }
 

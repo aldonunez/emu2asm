@@ -249,12 +249,55 @@ namespace emu2asm.NesMlb
         public string ProcPattern;
     }
 
+    public class AttributeConfig : IXmlSerializable
+    {
+        public string Name;
+        public string Namespace;
+        public int Offset;
+        public string Content;
+
+        public XmlSchema GetSchema() => null;
+
+        public void ReadXml( XmlReader reader )
+        {
+            if ( !reader.MoveToFirstAttribute() )
+                throw new Exception();
+
+            do
+            {
+                switch ( reader.Name )
+                {
+                    case "Name":
+                        Name = reader.Value;
+                        break;
+
+                    case "Ns":
+                        Namespace = reader.Value;
+                        break;
+
+                    case "Offset":
+                        Offset = int.Parse( reader.Value, NumberStyles.HexNumber );
+                        break;
+                }
+            }
+            while ( reader.MoveToNextAttribute() );
+
+            reader.MoveToElement();
+
+            Content = reader.ReadElementContentAsString();
+        }
+
+        public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
+    }
+
     [XmlRoot( ElementName = "Emu2asm-nesmlb-config" )]
     public class Config
     {
         public List<Bank> Banks;
         public LabelMap Labels;
         public CommentConfig Comments;
+        [XmlArrayItem( "Attribute" )]
+        public List<AttributeConfig> Attributes;
 
         public static Config Make( TextReader textReader )
         {

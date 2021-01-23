@@ -39,6 +39,7 @@ namespace emu2asm.NesMlb
 
         public LabelScope Scope;
         public string CheapTag;
+        public DataAttribute DataAttribute;
     }
 
     class LabelNamespace
@@ -108,21 +109,11 @@ namespace emu2asm.NesMlb
                     Comment = comment
                 };
 
-                LabelNamespace labelNamespace = null;
-
-                switch ( type )
-                {
-                    case 'P': labelNamespace = db.Program;   record.Type = LabelType.Program; break;
-                    case 'R': labelNamespace = db.Ram;       record.Type = LabelType.Ram; break;
-                    case 'S': labelNamespace = db.SaveRam;   record.Type = LabelType.SaveRam; break;
-                    case 'W': labelNamespace = db.WorkRam;   record.Type = LabelType.WorkRam; break;
-                    case 'G': labelNamespace = db.Registers; record.Type = LabelType.Registers; break;
-                    default:
-                        break;
-                }
+                LabelNamespace labelNamespace = db.GetNamespace( type );
 
                 if ( labelNamespace != null )
                 {
+                    record.Type = labelNamespace.Type;
                     labelNamespace.ByAddress.Add( record.Address, record );
 
                     if ( !string.IsNullOrEmpty( record.Name ) )
@@ -139,6 +130,19 @@ namespace emu2asm.NesMlb
             }
 
             return db;
+        }
+
+        public LabelNamespace GetNamespace( char type )
+        {
+            return type switch
+            {
+                'P' => Program,
+                'R' => Ram,
+                'S' => SaveRam,
+                'W' => WorkRam,
+                'G' => Registers,
+                _ => null
+            };
         }
     }
 }
