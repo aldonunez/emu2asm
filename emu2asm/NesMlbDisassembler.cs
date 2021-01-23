@@ -338,7 +338,7 @@ namespace emu2asm.NesMlb
                                 throw new ApplicationException();
 
                             if ( !dataAttr.WriteBlock( this, segment, romOffset, subjLabel, writer ) )
-                                WriteAddressTable( segment, romOffset, subjLabel, writer );
+                                WriteDataBlock( romOffset, subjLabel.Length, writer );
 
                             romOffset += subjLabel.Length - 1;
                         }
