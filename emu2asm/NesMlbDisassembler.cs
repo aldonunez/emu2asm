@@ -1589,7 +1589,7 @@ namespace emu2asm.NesMlb
             foreach ( var bankInfo in _config.Banks )
             {
                 writer.WriteLine(
-                    "    ROM_{0}: start = ${1:X4}, size = ${2:X4}, file = \"bank_{0}.bin\", fill = yes, fillval = $FF ;",
+                    "    ROM_{0}: start = ${1:X4}, size = ${2:X4}, file = %O, fill = yes, fillval = $FF ;",
                     bankInfo.Id,
                     bankInfo.Address,
                     bankInfo.Size );
