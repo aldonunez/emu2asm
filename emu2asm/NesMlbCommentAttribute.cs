@@ -63,7 +63,7 @@ namespace emu2asm.NesMlb
         }
 
 
-        internal class SplitAddrTableDataAttribute : DataAttribute
+        internal abstract class SplitAddrTableDataAttribute : DataAttribute
         {
             private bool _isLow;
             private int _stride = -1;
@@ -160,6 +160,24 @@ namespace emu2asm.NesMlb
                 else
                     sExpr = string.Format( "${0:X4}", addr );
                 return sExpr;
+            }
+        }
+
+
+        internal class SplitAddrTableLoDataAttribute : SplitAddrTableDataAttribute
+        {
+            public SplitAddrTableLoDataAttribute( string def, int attrEnd, int lineEnd ) :
+                base( true, def, attrEnd, lineEnd )
+            {
+            }
+        }
+
+
+        internal class SplitAddrTableHiDataAttribute : SplitAddrTableDataAttribute
+        {
+            public SplitAddrTableHiDataAttribute( string def, int attrEnd, int lineEnd ) :
+                base( false, def, attrEnd, lineEnd )
+            {
             }
         }
 

@@ -468,7 +468,7 @@ namespace emu2asm.NesMlb
 
         private void WriteSideComment( StreamWriter writer, string comment, long linePos )
         {
-            if ( string.IsNullOrEmpty( comment ) )
+            if ( !EnableComments || string.IsNullOrEmpty( comment ) )
                 return;
 
             writer.Flush();
@@ -537,7 +537,7 @@ namespace emu2asm.NesMlb
                 else
                     sOperand = string.Format( "${0:X4}", addr );
 
-                writer.WriteLine( "    .WORD {0}", sOperand );
+                writer.WriteLine( "    .ADDR {0}", sOperand );
             }
 
             writer.WriteLine();
@@ -1543,7 +1543,11 @@ namespace emu2asm.NesMlb
         {
             var allowedAttributes = new Dictionary<string, Type>()
             {
-                { "IncBin", typeof( IncBinDataAttribute ) }
+                { "INCBIN", typeof( IncBinDataAttribute ) },
+                { "ATAB", typeof( AddrTableDataAttribute ) },
+                { "ATABL", typeof( SplitAddrTableLoDataAttribute ) },
+                { "ATABH", typeof( SplitAddrTableHiDataAttribute ) },
+                { "WORD", typeof( WordDataAttribute ) },
             };
 
             foreach ( var attrConfig in _config.Attributes )
@@ -1624,7 +1628,7 @@ namespace emu2asm.NesMlb
 
         private void WriteLinkerScript()
         {
-            using var writer = new StreamWriter( "nes.cfg", false, System.Text.Encoding.ASCII );
+            using var writer = new StreamWriter( "Z.cfg", false, System.Text.Encoding.ASCII );
 
             writer.WriteLine( "MEMORY\n{" );
             foreach ( var bankInfo in _config.Banks )

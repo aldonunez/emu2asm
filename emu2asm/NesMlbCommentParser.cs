@@ -184,11 +184,11 @@ namespace emu2asm.NesMlb
             }
             else if ( subattrSpan.Equals( "ATABL", StringComparison.Ordinal ) )
             {
-                attribute = new Disassembler.SplitAddrTableDataAttribute( true, _comment, attrEnd, lineEnd );
+                attribute = new Disassembler.SplitAddrTableLoDataAttribute( _comment, attrEnd, lineEnd );
             }
             else if ( subattrSpan.Equals( "ATABH", StringComparison.Ordinal ) )
             {
-                attribute = new Disassembler.SplitAddrTableDataAttribute( false, _comment, attrEnd, lineEnd );
+                attribute = new Disassembler.SplitAddrTableHiDataAttribute( _comment, attrEnd, lineEnd );
             }
             else if ( subattrSpan.Equals( "HEAPDIR", StringComparison.Ordinal ) )
             {
