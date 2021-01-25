@@ -32,6 +32,7 @@ namespace emu2asm.NesMlb
         public bool EnableCheapLabels { get; set; }
         public bool EnableUnnamedLabels { get; set; }
         public bool EnableEmbeddedRefs { get; set; }
+        public bool EnableAddresses { get; set; }
 
         public Disassembler(
             Config config,
@@ -313,7 +314,7 @@ namespace emu2asm.NesMlb
                         long lineStartPos = writer.BaseStream.Position;
                         writer.Write( "    " );
                         disasm.Format( inst, memoryName, writer );
-                        WriteSideComment( writer, sideComment, lineStartPos );
+                        WriteSideComment( writer, sideComment, lineStartPos, romOffset );
                         writer.WriteLine();
 
                         if ( inst.Class == Class.JMP
@@ -466,9 +467,9 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private void WriteSideComment( StreamWriter writer, string comment, long linePos )
+        private void WriteSideComment( StreamWriter writer, string comment, long linePos, int romOffset )
         {
-            if ( !EnableComments || string.IsNullOrEmpty( comment ) )
+            if ( !EnableAddresses && (!EnableComments || string.IsNullOrEmpty( comment )) )
                 return;
 
             writer.Flush();
@@ -487,7 +488,12 @@ namespace emu2asm.NesMlb
             }
 
             writer.Write( ';' );
-            writer.Write( comment );
+
+            if ( EnableAddresses )
+                writer.Write( " [{0:X4}]{1}", romOffset, EnableComments ? " " : "" );
+
+            if ( EnableComments )
+                writer.Write( comment );
         }
 
         private static void WriteCommentBlock( string comment, string indent, StreamWriter writer )

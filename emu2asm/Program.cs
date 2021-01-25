@@ -37,11 +37,14 @@ namespace emu2asm
                 new Option<bool>(
                     "--enable-embedded-refs",
                     "List offsets from labeled data blocks" ),
+                new Option<bool>(
+                    "--enable-addresses",
+                    "Shows ROM offsets of code in comments" ),
             };
 
             disasmCmd.Handler = CommandHandler.Create<
                 string, string, string, string,
-                bool, bool, bool, bool, bool
+                bool, bool, bool, bool, bool, bool
                 >( Disassemble );
 
             var rootCmd = new RootCommand
@@ -55,12 +58,12 @@ namespace emu2asm
         private static void Disassemble(
             string config, string rom, string coverage, string labels,
             bool separateUnknown, bool enableComments, bool enableCheapLabels,
-            bool enableUnnamedLabels, bool enableEmbeddedRefs )
+            bool enableUnnamedLabels, bool enableEmbeddedRefs, bool enableAddresses )
         {
             NesMlb.Processor.Disassemble(
                 config, rom, coverage, labels,
                 separateUnknown, enableComments, enableCheapLabels,
-                enableUnnamedLabels, enableEmbeddedRefs );
+                enableUnnamedLabels, enableEmbeddedRefs, enableAddresses );
         }
     }
 }
