@@ -314,7 +314,7 @@ namespace emu2asm.NesMlb
                         long lineStartPos = writer.BaseStream.Position;
                         writer.Write( "    " );
                         disasm.Format( inst, memoryName, writer );
-                        WriteSideComment( writer, sideComment, lineStartPos, romOffset );
+                        WriteSideComment( writer, sideComment, lineStartPos, romOffset, pc );
                         writer.WriteLine();
 
                         if ( inst.Class == Class.JMP
@@ -467,7 +467,8 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private void WriteSideComment( StreamWriter writer, string comment, long linePos, int romOffset )
+        private void WriteSideComment(
+            StreamWriter writer, string comment, long linePos, int romOffset, ushort pc )
         {
             if ( !EnableAddresses && (!EnableComments || string.IsNullOrEmpty( comment )) )
                 return;
@@ -490,7 +491,7 @@ namespace emu2asm.NesMlb
             writer.Write( ';' );
 
             if ( EnableAddresses )
-                writer.Write( " [{0:X4}]{1}", romOffset, EnableComments ? " " : "" );
+                writer.Write( " {0:X4} [{1:X4}]{2}", pc, romOffset, EnableComments ? " " : "" );
 
             if ( EnableComments )
                 writer.Write( comment );
