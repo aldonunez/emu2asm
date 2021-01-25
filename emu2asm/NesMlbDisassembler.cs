@@ -1745,20 +1745,29 @@ namespace emu2asm.NesMlb
 
         private void CollateModuleLabels()
         {
+            Bank prevBank = null;
+            HashSet<string> modNames = null;
+
             foreach ( var segment in _segments )
             {
-                CollateSegmentModuleLabels( segment );
+                if ( prevBank != segment.Parent )
+                {
+                    prevBank = segment.Parent;
+                    modNames = new HashSet<string>();
+                }
+
+                CollateSegmentModuleLabels( segment, modNames );
             }
         }
 
-        private void CollateSegmentModuleLabels( Segment segment )
+        private void CollateSegmentModuleLabels( Segment segment, HashSet<string> modNames )
         {
             _ranges = new();
             _rangeQ = new();
 
             FindCheapRanges( segment );
             LinkCheapRanges( segment );
-            FindModuleLabels( segment );
+            FindModuleLabels( segment, modNames );
         }
 
         private void FindCheapRanges( Segment segment )
@@ -1882,10 +1891,8 @@ namespace emu2asm.NesMlb
             }
         }
 
-        private void FindModuleLabels( Segment segment )
+        private void FindModuleLabels( Segment segment, HashSet<string> modNames )
         {
-            var modNames = new HashSet<string>();
-
             while ( _rangeQ.Count > 0 )
             {
                 CheapRange range = _rangeQ.Dequeue();
