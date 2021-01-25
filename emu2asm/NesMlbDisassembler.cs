@@ -1409,10 +1409,14 @@ namespace emu2asm.NesMlb
 
         private void GenerateSaveRamJumpLabels()
         {
+            Segment callerSeg;
+
             // Generate labels for jumps in code copied to Save RAM.
 
             foreach ( var segment in _segments )
             {
+                callerSeg = segment;
+
                 if ( segment.Type != SegmentType.SaveRam )
                     continue;
 
@@ -1426,13 +1430,14 @@ namespace emu2asm.NesMlb
                     ProcessBankCode( startOffset, endOffset, addr, ProcessInstruction );
             }
 
-            void ProcessInstruction( InstDisasm inst, int offset )
+            void ProcessInstruction( InstDisasm inst, int instOffset )
             {
                 if ( inst.Mode != Mode.r )
                     return;
 
-                int relAddr = inst.Value - 0x6000;
-                string labelName = string.Format( "L{0:X4}", inst.Value );
+                int nsOffset = inst.Value - 0x6000;
+                int targetOffset = GetOffsetFromAddress( callerSeg, inst.Value );
+                string labelName = string.Format( "L{0:X4}", targetOffset );
 
                 // If found, then it has a comment but no name.
 
@@ -1440,17 +1445,17 @@ namespace emu2asm.NesMlb
                 {
                     bool addName = false;
 
-                    if ( !_labelDb.SaveRam.ByAddress.TryGetValue( relAddr, out record ) )
+                    if ( !_labelDb.SaveRam.ByAddress.TryGetValue( nsOffset, out record ) )
                     {
                         record = new LabelRecord
                         {
                             Type = LabelType.SaveRam,
-                            Address = relAddr,
+                            Address = nsOffset,
                             Name = labelName,
                             Length = 1
                         };
 
-                        _labelDb.SaveRam.ByAddress.Add( relAddr, record );
+                        _labelDb.SaveRam.ByAddress.Add( nsOffset, record );
                         addName = true;
                     }
                     else if ( string.IsNullOrEmpty( record.Name ) )
@@ -1851,7 +1856,7 @@ namespace emu2asm.NesMlb
                 {
                     CheapRange r = curRanges[i];
 
-                    if ( romOffset == r.Label.Address )
+                    if ( romOffset == segment.GetRomOffsetFromNSOffset( r.Label.Address ) )
                         r.Links = curRanges.ToArray();
 
                     if ( romOffset == r.End )
@@ -1863,7 +1868,7 @@ namespace emu2asm.NesMlb
                 {
                     CheapRange r = _ranges[nextRangeIndex];
 
-                    if ( romOffset == r.Label.Address )
+                    if ( romOffset == segment.GetRomOffsetFromNSOffset( r.Label.Address ) )
                         r.Links = curRanges.ToArray();
 
                     if ( r.Label.Scope == LabelScope.Cheap )
