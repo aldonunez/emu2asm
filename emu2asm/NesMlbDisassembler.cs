@@ -287,7 +287,7 @@ namespace emu2asm.NesMlb
                             ThrowBadInstructionError( romOffset );
 
                         if ( inst.Mode == Mode.r
-                            || (inst.Mode == Mode.a && inst.Class == Class.JMP) )
+                            || (inst.Mode == Mode.a && (inst.Class == Class.JMP || inst.Class == Class.JSR)) )
                         {
                             var operand = FindAbsoluteAddressLabel( segment, inst.Value, romOffset );
 
@@ -1812,7 +1812,7 @@ namespace emu2asm.NesMlb
                 }
 
                 if ( (inst.Mode == Mode.r
-                    || (inst.Mode == Mode.a && inst.Class == Class.JMP))
+                    || (inst.Mode == Mode.a && (inst.Class == Class.JMP || inst.Class == Class.JSR)))
                     && segment.IsAddressInside( inst.Value ) )
                 {
                     int targetOffset = GetOffsetFromAddress( segment, inst.Value );
