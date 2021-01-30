@@ -290,14 +290,58 @@ namespace emu2asm.NesMlb
         public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
     }
 
+    public class CoverageRange : IXmlSerializable
+    {
+        public int Offset;
+        public int Size;
+        public MemoryUse MemoryUse;
+
+        public XmlSchema GetSchema() => null;
+
+        public void ReadXml( XmlReader reader )
+        {
+            if ( !reader.MoveToFirstAttribute() )
+                throw new Exception();
+
+            do
+            {
+                switch ( reader.Name )
+                {
+                    case "Offset":
+                        Offset = int.Parse( reader.Value, NumberStyles.HexNumber );
+                        break;
+
+                    case "Size":
+                        Size = int.Parse( reader.Value, NumberStyles.HexNumber );
+                        break;
+
+                    case "Use":
+                        MemoryUse = Enum.Parse<MemoryUse>( reader.Value );
+                        break;
+
+                }
+            }
+            while ( reader.MoveToNextAttribute() );
+
+            reader.MoveToElement();
+            reader.Skip();
+        }
+
+        public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
+    }
+
     [XmlRoot( ElementName = "Emu2asm-nesmlb-config" )]
     public class Config
     {
         public List<Bank> Banks;
         public LabelMap Labels;
         public CommentConfig Comments;
+
         [XmlArrayItem( "Attribute" )]
         public List<AttributeConfig> Attributes;
+
+        [XmlArrayItem( "Range" )]
+        public List<CoverageRange> Coverage;
 
         public static Config Make( TextReader textReader )
         {

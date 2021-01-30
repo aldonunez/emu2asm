@@ -157,6 +157,7 @@ namespace emu2asm.NesMlb
         public void Disassemble()
         {
             ClearUnusedCoverageBit();
+            ApplyCoverageOverrides();
             MarkSaveRamCodeCoverage();
             GenerateSaveRamJumpLabels();
 
@@ -1375,6 +1376,21 @@ namespace emu2asm.NesMlb
             }
 
             return null;
+        }
+
+        private void ApplyCoverageOverrides()
+        {
+            foreach ( var range in _config.Coverage )
+            {
+                byte coverageByte = range.MemoryUse switch
+                {
+                    MemoryUse.Code => 0x10,
+                    MemoryUse.Data => 0x20,
+                    _ => 0
+                };
+
+                Array.Fill<byte>( _coverage, coverageByte, range.Offset, range.Size );
+            }
         }
 
         private void MarkSaveRamCodeCoverage()
