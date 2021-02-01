@@ -1449,8 +1449,15 @@ namespace emu2asm.NesMlb
 
             void ProcessInstruction( InstDisasm inst, int instOffset )
             {
-                if ( inst.Mode != Mode.r )
+                if ( inst.Class == Class.JSR || (inst.Class == Class.JMP && inst.Mode == Mode.a) )
+                {
+                    if ( !callerSeg.IsAddressInside( inst.Value ) )
+                        return;
+                }
+                else if ( inst.Mode != Mode.r )
+                {
                     return;
+                }
 
                 int nsOffset = inst.Value - 0x6000;
                 int targetOffset = GetOffsetFromAddress( callerSeg, inst.Value );
