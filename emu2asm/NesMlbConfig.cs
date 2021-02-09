@@ -131,6 +131,22 @@ namespace emu2asm.NesMlb
         public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
     }
 
+    public class BlockRef : IXmlSerializable
+    {
+        [XmlAttribute]
+        public string Name;
+
+        public XmlSchema GetSchema() => null;
+
+        public void ReadXml( XmlReader reader )
+        {
+            Name = reader.GetAttribute( "Name" );
+            reader.Skip();
+        }
+
+        public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
+    }
+
     public class Bank : IXmlSerializable
     {
         public string Id;
@@ -138,6 +154,7 @@ namespace emu2asm.NesMlb
         public int Address;
         public int Size;
         internal readonly List<Segment> Segments = new();
+        internal readonly List<BlockRef> Blocks = new();
 
         public XmlSchema GetSchema() => null;
 
@@ -175,6 +192,14 @@ namespace emu2asm.NesMlb
                     case "Segments":
                         ReadSegments( reader );
                         break;
+
+                    case "Block":
+                    {
+                        var blockRef = new BlockRef();
+                        blockRef.ReadXml( reader );
+                        Blocks.Add( blockRef );
+                    }
+                    break;
 
                     default:
                         reader.Skip();
@@ -330,6 +355,15 @@ namespace emu2asm.NesMlb
         public void WriteXml( XmlWriter writer ) => throw new NotImplementedException();
     }
 
+    public class CodeBlock
+    {
+        [XmlAttribute]
+        public string Name;
+
+        [XmlText]
+        public string Content;
+    }
+
     [XmlRoot( ElementName = "Emu2asm-nesmlb-config" )]
     public class Config
     {
@@ -342,6 +376,9 @@ namespace emu2asm.NesMlb
 
         [XmlArrayItem( "Range" )]
         public List<CoverageRange> Coverage;
+
+        [XmlArrayItem( "Block" )]
+        public List<CodeBlock> Code;
 
         public static Config Make( TextReader textReader )
         {

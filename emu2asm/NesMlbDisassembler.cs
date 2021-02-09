@@ -22,6 +22,7 @@ namespace emu2asm.NesMlb
 
         private List<Segment> _segments = new();
         private List<Segment> _fixedSegments = new();
+        private Dictionary<string, CodeBlock> _nameToCodeBlock = new();
 
         private Regex _procPatternRegex;
         private StringBuilder _unnamedLabelStringBuilder = new();
@@ -60,6 +61,7 @@ namespace emu2asm.NesMlb
 
             SortLabelsBySegment( _labelDb.Program );
             SortLabelsBySegment( _labelDb.SaveRam );
+            SortCodeBlocks();
         }
 
         private void SortLabelsBySegment( LabelNamespace @namespace )
@@ -110,6 +112,14 @@ namespace emu2asm.NesMlb
                     // If needed, we can implement a "root segment" concept to catch
                     // all labels in a bank that are not within user-specified segments.
                 }
+            }
+        }
+
+        private void SortCodeBlocks()
+        {
+            foreach ( var block in _config.Code )
+            {
+                _nameToCodeBlock.Add( block.Name, block );
             }
         }
 
@@ -192,6 +202,8 @@ namespace emu2asm.NesMlb
             using var writer = new StreamWriter( filename, false, System.Text.Encoding.ASCII );
 
             writer.WriteLine( ".INCLUDE \"Variables.inc\"" );
+
+            WriteCodeBlocks( bankInfo, writer );
 
             foreach ( var segment in bankInfo.Segments )
             {
@@ -1658,6 +1670,16 @@ namespace emu2asm.NesMlb
                 {
                     writer.WriteLine( "{0} := ${1:X4}", pair.Key, address );
                 }
+            }
+        }
+
+        private void WriteCodeBlocks( Bank bankInfo, StreamWriter writer )
+        {
+            foreach ( var blockRef in bankInfo.Blocks )
+            {
+                var block = _nameToCodeBlock[blockRef.Name];
+
+                writer.WriteLine( block.Content );
             }
         }
 
